@@ -1,6 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers.properties import router as properties_router
+from app.routers.properties import router as properties_router
+from app.routers import pdf
+
+
 
 app = FastAPI(
     title="Tenement Rate Management API",
@@ -17,6 +20,7 @@ app.add_middleware(
 )
 
 app.include_router(properties_router)
+app.include_router(pdf.router)
 
 @app.get("/")
 def home():

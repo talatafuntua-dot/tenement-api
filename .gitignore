@@ -16,3 +16,7 @@ __pycache__/
 
 # Windows
 Thumbs.db
+
+# Generated folders
+output_pdfs/
+uploads/

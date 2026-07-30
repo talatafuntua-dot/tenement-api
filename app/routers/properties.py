@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import crud
+from app.pdf_generator import generate_notice_pdf
 
 router = APIRouter(
     prefix="/properties",
@@ -41,3 +42,29 @@ def get_property(
         )
 
     return property
+
+
+# ... your existing routes ...
+
+@router.post("/generate-notice")
+async def generate_notice(
+    data: dict,
+    db: Session = Depends(get_db)
+):
+
+    property_no = data.get("property_no")
+
+    property = crud.get_property_by_number(db, property_no)
+
+    if not property:
+        raise HTTPException(
+            status_code=404,
+            detail="Property not found"
+        )
+
+    pdf_file = generate_notice_pdf(property)
+
+    return {
+        "message": "Notice generated successfully",
+        "pdf": pdf_file
+    }
