@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 from fastapi import APIRouter
@@ -7,7 +6,10 @@ from fastapi.responses import FileResponse
 
 router = APIRouter()
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+# Project root
+BASE_DIR = Path(__file__).resolve().parents[2]
+
+# Same folder used by pdf_generator.py
 OUTPUT_FOLDER = BASE_DIR / "output_pdfs"
 
 
