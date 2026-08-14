@@ -1,26 +1,46 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from app.routers.properties import router as properties_router
-from app.routers import pdf
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+from sqlalchemy import func
 
-app = FastAPI(
-title="Tenement Rate Management API",
-version="1.0.0"
+from app.database import get_db
+from app.models import Property
+
+router = APIRouter(
+prefix="/reports",
+tags=["Reports"]
 )
 
-app.add_middleware(
-CORSMiddleware,
-allow_origins=["*"],
-allow_credentials=True,
-allow_methods=["*"],
-allow_headers=["*"],
-)
+@router.get("/summary")
+def report_summary(db: Session = Depends(get_db)):
 
-app.include_router(properties_router)
-app.include_router(pdf.router)
+```
+total_properties = db.query(Property).count()
 
-@app.get("/")
-def home():
-    return {
-        "message": "Welcome to the Tenement Rate Management API"
+total_annual_value = db.query(
+    func.coalesce(
+        func.sum(Property.annual_value),
+        0
+    )
+).scalar()
+
+total_rate_due = db.query(
+    func.coalesce(
+        func.sum(Property.rate_due),
+        0
+    )
+).scalar()
+
+average_rate_due = db.query(
+    func.coalesce(
+        func.avg(Property.rate_due),
+        0
+    )
+).scalar()
+
+return {
+    "total_properties": total_properties,
+    "total_annual_value": float(total_annual_value or 0),
+    "total_rate_due": float(total_rate_due or 0),
+    "average_rate_due": float(average_rate_due or 0)
 }
+```
