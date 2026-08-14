@@ -1,3 +1,4 @@
+```python
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -153,4 +154,4 @@ def report_by_status(
         }
         for row in results
     ]
-]
+```
