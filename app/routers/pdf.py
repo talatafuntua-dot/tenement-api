@@ -1,20 +1,22 @@
-from fastapi.responses import FileResponse
+from pathlib import Path
 from fastapi import APIRouter
-import os
+from fastapi.responses import FileResponse
 
 router = APIRouter()
 
-OUTPUT_FOLDER = r"C:\Users\USER\Downloads\ALL\tenement\tenement\output_pdfs"
+OUTPUT_FOLDER = Path(__file__).resolve().parent.parent / "output_pdfs"
+
 
 @router.get("/download/{filename}")
 def download_pdf(filename: str):
-    file_path = os.path.join(OUTPUT_FOLDER, filename)
 
-    if not os.path.exists(file_path):
+    file_path = OUTPUT_FOLDER / filename
+
+    if not file_path.exists():
         return {"error": "File not found"}
 
     return FileResponse(
-        file_path,
+        str(file_path),
         media_type="application/pdf",
         filename=filename
     )
