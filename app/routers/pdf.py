@@ -5,13 +5,16 @@ from fastapi.responses import FileResponse
 router = APIRouter()
 
 OUTPUT_FOLDER = Path(__file__).resolve().parent.parent / "output_pdfs"
+print("DOWNLOAD OUTPUT FOLDER:", OUTPUT_FOLDER)
 
 
 @router.get("/download/{filename}")
 def download_pdf(filename: str):
 
     file_path = OUTPUT_FOLDER / filename
-
+print("DOWNLOAD REQUEST:", filename)
+print("LOOKING FOR:", file_path)
+print("FILE EXISTS:", file_path.exists())
     if not file_path.exists():
         return {"error": "File not found"}
 
