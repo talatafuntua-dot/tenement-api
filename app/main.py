@@ -21,6 +21,6 @@ app.include_router(pdf.router)
 
 @app.get("/")
 def home():
-return {
-"message": "Welcome to the Tenement Rate Management API"
+    return {
+        "message": "Welcome to the Tenement Rate Management API"
 }
