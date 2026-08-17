@@ -14,7 +14,6 @@ Features
 """
 
 import re
-from copy import deepcopy
 from docx import Document
 
 
@@ -32,10 +31,13 @@ class TemplateEngine:
 
     def render(self, template_path, output_path, data):
 
+        # Load the original Word template
         doc = Document(template_path)
 
+        # Process all document content
         self._process_document(doc, data)
 
+        # Save the modified document
         doc.save(output_path)
 
         return sorted(self.missing_placeholders)
@@ -46,23 +48,30 @@ class TemplateEngine:
 
     def _process_document(self, doc, data):
 
+        # Main document paragraphs
         for paragraph in doc.paragraphs:
             self._replace_paragraph(paragraph, data)
 
+        # Main document tables
         for table in doc.tables:
             self._process_table(table, data)
 
+        # Headers and footers
         for section in doc.sections:
 
+            # Header paragraphs
             for paragraph in section.header.paragraphs:
                 self._replace_paragraph(paragraph, data)
 
+            # Header tables
             for table in section.header.tables:
                 self._process_table(table, data)
 
+            # Footer paragraphs
             for paragraph in section.footer.paragraphs:
                 self._replace_paragraph(paragraph, data)
 
+            # Footer tables
             for table in section.footer.tables:
                 self._process_table(table, data)
 
@@ -76,9 +85,11 @@ class TemplateEngine:
 
             for cell in row.cells:
 
+                # Paragraphs directly inside the cell
                 for paragraph in cell.paragraphs:
                     self._replace_paragraph(paragraph, data)
 
+                # Nested tables
                 for nested in cell.tables:
                     self._process_table(nested, data)
 
@@ -88,46 +99,55 @@ class TemplateEngine:
 
     def _replace_paragraph(self, paragraph, data):
 
-        if not paragraph.text:
+        if not paragraph.runs:
             return
 
-        original = paragraph.text
-        updated = original
+        # -------------------------------------------------
+        # Replace placeholders inside existing runs.
+        #
+        # IMPORTANT:
+        # We do NOT delete and recreate the runs.
+        #
+        # This preserves the original Word template
+        # structure and formatting.
+        # -------------------------------------------------
 
-        placeholders = PLACEHOLDER_PATTERN.findall(original)
+        for run in paragraph.runs:
 
-        for key in placeholders:
+            if not run.text:
+                continue
 
-            clean_key = key.strip().upper()
+            original_text = run.text
 
-            placeholder = "{{" + key + "}}"
+            placeholders = PLACEHOLDER_PATTERN.findall(
+                original_text
+            )
 
-            if clean_key in data:
+            if not placeholders:
+                continue
 
-                updated = updated.replace(
-                    placeholder,
-                    str(data[clean_key])
-                )
+            updated_text = original_text
 
-            else:
+            for key in placeholders:
 
-                self.missing_placeholders.add(clean_key)
+                clean_key = key.strip().upper()
 
-        if updated == original:
-            return
+                placeholder = "{{" + key + "}}"
 
-        # Preserve first run formatting
-        first_style = None
+                if clean_key in data:
 
-        if paragraph.runs:
-            first_style = deepcopy(paragraph.runs[0]._element.rPr)
+                    updated_text = updated_text.replace(
+                        placeholder,
+                        str(data[clean_key])
+                    )
 
-        # Remove all runs
-        while paragraph.runs:
-            run = paragraph.runs[0]._element
-            run.getparent().remove(run)
+                else:
 
-        new_run = paragraph.add_run(updated)
+                    self.missing_placeholders.add(
+                        clean_key
+                    )
 
-        if first_style is not None:
-            new_run._element.get_or_add_rPr().append(first_style)
+            # Only modify the run if something actually changed
+            if updated_text != original_text:
+
+                run.text = updated_text
