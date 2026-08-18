@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
+from fastapi.encoders import jsonable_encoder
 
 from app.database import get_db
 from app.models import Property
@@ -41,13 +42,10 @@ def get_data_records(
 
             value = getattr(property, column.name)
 
-            if value is not None:
-                record[column.name] = value
-            else:
-                record[column.name] = None
+            record[column.name] = value
 
         records.append(record)
 
-    return {
+    return jsonable_encoder({
         "records": records
-    }
+    })
