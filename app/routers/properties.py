@@ -23,7 +23,7 @@ router = APIRouter(
 # TEMPLATE LOCATION
 # =====================================================
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parents[2]
 
 TEMPLATES_FOLDER = (
     BASE_DIR / "templates"
