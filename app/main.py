@@ -1,46 +1,31 @@
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from sqlalchemy import func
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from app.routers.properties import router as properties_router
+from app.routers import pdf
+from app import data
 
-from app.database import get_db
-from app.models import Property
 
-router = APIRouter(
-prefix="/reports",
-tags=["Reports"]
+
+app = FastAPI(
+    title="Tenement Rate Management API",
+    version="1.0.0"
 )
 
-@router.get("/summary")
-def report_summary(db: Session = Depends(get_db)):
+# Allow requests from your WordPress site
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],   # Change this later to your WordPress domain
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-```
-total_properties = db.query(Property).count()
+app.include_router(properties_router)
+app.include_router(pdf.router)
+app.include_router(data.router)
 
-total_annual_value = db.query(
-    func.coalesce(
-        func.sum(Property.annual_value),
-        0
-    )
-).scalar()
-
-total_rate_due = db.query(
-    func.coalesce(
-        func.sum(Property.rate_due),
-        0
-    )
-).scalar()
-
-average_rate_due = db.query(
-    func.coalesce(
-        func.avg(Property.rate_due),
-        0
-    )
-).scalar()
-
-return {
-    "total_properties": total_properties,
-    "total_annual_value": float(total_annual_value or 0),
-    "total_rate_due": float(total_rate_due or 0),
-    "average_rate_due": float(average_rate_due or 0)
-}
-```
+@app.get("/")
+def home():
+    return {
+        "message": "Welcome to the Tenement Rate Management API"
+    }
