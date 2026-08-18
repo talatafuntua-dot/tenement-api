@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from fastapi.encoders import jsonable_encoder
+from decimal import Decimal
 import math
 
 from app.database import get_db
@@ -43,9 +44,15 @@ def get_data_records(
 
             value = getattr(property, column.name)
 
-            # Convert NaN / Infinity to None
-            if isinstance(value, float) and not math.isfinite(value):
-                value = None
+            # Handle floating-point NaN / Infinity
+            if isinstance(value, float):
+                if not math.isfinite(value):
+                    value = None
+
+            # Handle Decimal NaN / Infinity
+            elif isinstance(value, Decimal):
+                if not value.is_finite():
+                    value = None
 
             record[column.name] = value
 
