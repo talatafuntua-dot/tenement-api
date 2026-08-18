@@ -2,7 +2,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers.properties import router as properties_router
 from app.routers import pdf
-from app import data
 from app.routers.reports import router as reports_router
 
 
@@ -23,7 +22,6 @@ app.add_middleware(
 
 app.include_router(properties_router)
 app.include_router(pdf.router)
-app.include_router(data.router)
 app.include_router(reports_router)
 
 @app.get("/")
