@@ -49,7 +49,33 @@ def get_properties(
 
 
 # =====================================================
+# UNIVERSAL PROPERTY SEARCH
+#
+# Searches:
+#
+#   LG Code       - if column exists
+#   Owner Name
+#   Property Number
+#
+# All searches are case-insensitive.
+# =====================================================
+
+@router.get("/search")
+def search_properties(
+    query: str,
+    db: Session = Depends(get_db)
+):
+
+    return crud.search_properties(
+        db,
+        query
+    )
+
+
+# =====================================================
 # SEARCH BY OWNER
+#
+# Existing endpoint retained for compatibility.
 # =====================================================
 
 @router.get("/search/owner")
@@ -103,10 +129,12 @@ def get_templates():
 
 # =====================================================
 # GET PROPERTY
-# =====================================================
-
+#
 # This route accepts property numbers
 # containing '/'
+#
+# Property Number lookup remains available.
+# =====================================================
 
 @router.get("/{property_no:path}")
 def get_property(
