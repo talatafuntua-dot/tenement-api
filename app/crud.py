@@ -24,13 +24,13 @@ def get_all_properties(
 # =====================================================
 # CHECK IF LG CODE COLUMN EXISTS
 #
-# This checks the ACTUAL database table.
+# Checks the ACTUAL database.
 #
 # If lg_code does not exist:
-#     Nothing breaks.
+#     Property Number and Owner Name still work.
 #
 # If lg_code is added later:
-#     The API automatically detects it.
+#     It is automatically detected.
 # =====================================================
 
 def has_lg_code_column(
@@ -53,8 +53,6 @@ def has_lg_code_column(
 # GET PROPERTY BY NUMBER
 #
 # CASE-INSENSITIVE
-#
-# This remains available regardless of LG Code.
 # =====================================================
 
 def get_property_by_number(
@@ -77,14 +75,18 @@ def get_property_by_number(
 # SEARCH BY OWNER
 #
 # CASE-INSENSITIVE
-#
-# This remains available regardless of LG Code.
+# PARTIAL MATCH
 # =====================================================
 
 def search_owner(
     db: Session,
     owner_name: str
 ):
+
+    owner_name = owner_name.strip()
+
+    if not owner_name:
+        return []
 
     return (
         db.query(Property)
@@ -103,7 +105,7 @@ def search_owner(
 # Searches:
 #
 # 1. LG CODE
-#    - Only if the database column exists
+#    - If column exists in database
 #    - Exact match
 #    - Case-insensitive
 #
@@ -115,7 +117,8 @@ def search_owner(
 #    - Partial match
 #    - Case-insensitive
 #
-# This makes the API flexible.
+# LG CODE IS OPTIONAL.
+# Its absence MUST NOT affect other searches.
 # =====================================================
 
 def search_properties(
@@ -130,20 +133,20 @@ def search_properties(
 
 
     # =================================================
-    # ALWAYS SEARCH EXISTING COLUMNS
+    # ALWAYS SEARCH OWNER NAME + PROPERTY NUMBER
     # =================================================
 
     results = (
         db.query(Property)
         .filter(
             (
-                Property.property_no.ilike(
+                Property.owner_name.ilike(
                     f"%{query}%"
                 )
             )
             |
             (
-                Property.owner_name.ilike(
+                Property.property_no.ilike(
                     f"%{query}%"
                 )
             )
@@ -158,7 +161,7 @@ def search_properties(
 
     if has_lg_code_column(db):
 
-        lg_results = db.execute(
+        lg_result = db.execute(
             text("""
                 SELECT *
                 FROM properties
@@ -168,26 +171,39 @@ def search_properties(
             {
                 "lg_code": query
             }
-        ).mappings().all()
+        ).mappings().first()
 
 
-        # ---------------------------------------------
-        # Avoid duplicate records
-        # ---------------------------------------------
+        if lg_result:
 
-        existing_ids = {
-            property.id
-            for property in results
-        }
+            existing_ids = {
+                item.id
+                for item in results
+            }
 
 
-        for row in lg_results:
+            # -----------------------------------------
+            # Add LG Code result if not already found
+            # -----------------------------------------
 
-            if row["id"] not in existing_ids:
+            if lg_result["id"] not in existing_ids:
 
-                results.append(
-                    dict(row)
+                # Find the SQLAlchemy Property object
+                # using the database ID.
+                property_by_id = (
+                    db.query(Property)
+                    .filter(
+                        Property.id == lg_result["id"]
+                    )
+                    .first()
                 )
+
+
+                if property_by_id:
+
+                    results.append(
+                        property_by_id
+                    )
 
 
     return results
