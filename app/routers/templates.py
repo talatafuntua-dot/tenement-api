@@ -1,15 +1,7 @@
 import os
 import shutil
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    UploadFile,
-    File,
-    Form,
-    HTTPException
-)
-
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -24,10 +16,7 @@ router = APIRouter(
 
 TEMPLATE_DIR = "/app/templates"
 
-os.makedirs(
-    TEMPLATE_DIR,
-    exist_ok=True
-)
+os.makedirs(TEMPLATE_DIR, exist_ok=True)
 
 
 @router.post("/upload")
@@ -37,7 +26,6 @@ def upload_template(
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-
     if not file.filename:
         raise HTTPException(
             status_code=400,
@@ -60,9 +48,7 @@ def upload_template(
 
     existing = (
         db.query(NoticeTemplate)
-        .filter(
-            NoticeTemplate.name == name
-        )
+        .filter(NoticeTemplate.name == name)
         .first()
     )
 
@@ -72,9 +58,7 @@ def upload_template(
             detail="A template with this name already exists."
         )
 
-    safe_filename = os.path.basename(
-        file.filename
-    )
+    safe_filename = os.path.basename(file.filename)
 
     file_path = os.path.join(
         TEMPLATE_DIR,
@@ -82,19 +66,13 @@ def upload_template(
     )
 
     try:
-
-        with open(
-            file_path,
-            "wb"
-        ) as buffer:
-
+        with open(file_path, "wb") as buffer:
             shutil.copyfileobj(
                 file.file,
                 buffer
             )
 
     except Exception as e:
-
         raise HTTPException(
             status_code=500,
             detail=f"Unable to save template: {str(e)}"
@@ -110,13 +88,10 @@ def upload_template(
     db.add(template)
 
     try:
-
         db.commit()
-
         db.refresh(template)
 
     except Exception as e:
-
         db.rollback()
 
         if os.path.exists(file_path):
@@ -143,12 +118,9 @@ def upload_template(
 def get_templates(
     db: Session = Depends(get_db)
 ):
-
     templates = (
         db.query(NoticeTemplate)
-        .order_by(
-            NoticeTemplate.name
-        )
+        .order_by(NoticeTemplate.name)
         .all()
     )
 
@@ -169,12 +141,9 @@ def get_template(
     template_id: int,
     db: Session = Depends(get_db)
 ):
-
     template = (
         db.query(NoticeTemplate)
-        .filter(
-            NoticeTemplate.id == template_id
-        )
+        .filter(NoticeTemplate.id == template_id)
         .first()
     )
 
