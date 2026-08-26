@@ -1,3 +1,4 @@
+from app.routers import templates
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers.properties import router as properties_router
@@ -25,6 +26,7 @@ app.include_router(properties_router)
 app.include_router(pdf.router)
 app.include_router(reports_router)
 app.include_router(data_router)
+app.include_router(templates.router)
 
 @app.get("/")
 def home():
