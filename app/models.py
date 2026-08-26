@@ -11,7 +11,7 @@ from sqlalchemy.sql import func
 from app.database import Base
 
 class Property(Base):
-**tablename** = "properties"
+__tablename__ = "properties"
 
 ```
 id = Column(Integer, primary_key=True, index=True)
@@ -74,7 +74,7 @@ updated_at = Column(
 ```
 
 class NoticeTemplate(Base):
-**tablename** = "notice_templates"
+_tablename_ = "notice_templates"
 
 ```
 id = Column(
