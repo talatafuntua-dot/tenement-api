@@ -1,6 +1,3 @@
-82% of storage used … If you run out, you can't create, edit, and upload files. Get 30 GB for NGN 100 for 1 month NGN 1,300.
-1
-100%
 # -*- coding: utf-8 -*-
 """
 template_engine.py
