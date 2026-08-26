@@ -1,5 +1,5 @@
-from app.database import engine
-from app.models import Base
+from app.database import engine, Base
+from app import models
 
 print("Creating missing database tables...")
 
