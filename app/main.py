@@ -1,10 +1,10 @@
-from app.routers import templates
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers.properties import router as properties_router
 from app.routers import pdf
 from app.routers.reports import router as reports_router
 from app.routers.data import router as data_router
+from app.routers import templates
 
 
 
