@@ -1,11 +1,5 @@
-from fastapi import (
-APIRouter,
-Depends,
-HTTPException
-)
-
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-
 from pathlib import Path
 
 from app.database import get_db
@@ -25,7 +19,6 @@ tags=["Properties"]
 # =====================================================
 
 BASE_DIR = Path(**file**).resolve().parents[2]
-
 TEMPLATES_FOLDER = BASE_DIR / "templates"
 
 # =====================================================
@@ -40,14 +33,11 @@ skip: int = 0,
 limit: int = 100,
 db: Session = Depends(get_db)
 ):
-
-```
 return crud.get_all_properties(
-    db,
-    skip,
-    limit
+db,
+skip,
+limit
 )
-```
 
 # =====================================================
 
@@ -60,13 +50,10 @@ def search_properties(
 query: str,
 db: Session = Depends(get_db)
 ):
-
-```
 return crud.search_properties(
-    db,
-    query
+db,
+query
 )
-```
 
 # =====================================================
 
@@ -79,13 +66,10 @@ def search_by_owner(
 owner_name: str,
 db: Session = Depends(get_db)
 ):
-
-```
 return crud.search_owner(
-    db,
-    owner_name
+db,
+owner_name
 )
-```
 
 # =====================================================
 
@@ -98,7 +82,6 @@ def get_templates():
 
 ```
 if not TEMPLATES_FOLDER.exists():
-
     return {
         "templates": []
     }
@@ -108,7 +91,6 @@ templates = []
 for file in sorted(
     TEMPLATES_FOLDER.glob("*.docx")
 ):
-
     templates.append(
         {
             "name": file.name,
@@ -140,7 +122,6 @@ db: Session = Depends(get_db)
 property_no = data.get("property_no")
 
 if not property_no:
-
     raise HTTPException(
         status_code=400,
         detail="Property number is required"
@@ -156,7 +137,6 @@ property = crud.get_property_by_number(
 )
 
 if not property:
-
     raise HTTPException(
         status_code=404,
         detail="Property not found"
@@ -164,12 +144,6 @@ if not property:
 
 # -------------------------------------------------
 # Select template
-#
-# If template_id is supplied:
-# Load the template from notice_templates.
-#
-# Otherwise:
-# Keep the existing template behavior.
 # -------------------------------------------------
 
 template_id = data.get("template_id")
@@ -177,11 +151,9 @@ template_id = data.get("template_id")
 if template_id is not None:
 
     try:
-
         template_id = int(template_id)
 
     except (TypeError, ValueError):
-
         raise HTTPException(
             status_code=400,
             detail="template_id must be an integer"
@@ -196,7 +168,6 @@ if template_id is not None:
     )
 
     if not template_record:
-
         raise HTTPException(
             status_code=404,
             detail="Template not found"
@@ -265,15 +236,13 @@ return {
 
 #
 
-# This route accepts property numbers containing "/".
+# Accepts property numbers containing "/"
 
 #
 
-# IMPORTANT:
+# This catch-all route MUST remain after the
 
-# This catch-all route is deliberately placed AFTER
-
-# the specific routes above.
+# specific routes above.
 
 # =====================================================
 
@@ -290,7 +259,6 @@ property = crud.get_property_by_number(
 )
 
 if not property:
-
     raise HTTPException(
         status_code=404,
         detail="Property not found"
