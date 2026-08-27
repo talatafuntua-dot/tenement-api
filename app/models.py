@@ -80,3 +80,36 @@ class Property(Base):
         onupdate=func.now(),
         nullable=False
     )
+    class NoticeTemplate(Base):
+    __tablename__ = "notice_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    name = Column(
+        String(255),
+        unique=True,
+        nullable=False,
+        index=True
+    )
+
+    filename = Column(
+        String(255),
+        nullable=False
+    )
+
+    file_path = Column(
+        Text,
+        nullable=False
+    )
+
+    description = Column(
+        Text,
+        nullable=True
+    )
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False
+    )
+
