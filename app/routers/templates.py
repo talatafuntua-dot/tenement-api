@@ -114,12 +114,12 @@ def upload_template(
     # Save database record
     # --------------------------------------------------
 
-    template = NoticeTemplate(
-        name=template_name,
-        filename=original_filename,
-        description=description or ""
-    )
-
+   template = NoticeTemplate(
+    name=template_name,
+    filename=original_filename,
+    file_path=str(destination),
+    description=description or ""
+)
     db.add(template)
     db.commit()
     db.refresh(template)
