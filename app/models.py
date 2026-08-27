@@ -80,7 +80,7 @@ class Property(Base):
         onupdate=func.now(),
         nullable=False
     )
-    class NoticeTemplate(Base):
+   class NoticeTemplate(Base):
     __tablename__ = "notice_templates"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -112,4 +112,3 @@ class Property(Base):
         server_default=func.now(),
         nullable=False
     )
-
