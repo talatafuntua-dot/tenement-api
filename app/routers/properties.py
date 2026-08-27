@@ -160,7 +160,7 @@ def get_property(
 
     return property
 
-
+```python
 # =====================================================
 # GENERATE NOTICE
 # =====================================================
@@ -171,48 +171,79 @@ async def generate_notice(
     db: Session = Depends(get_db)
 ):
 
-    property_no = data.get(
-        "property_no"
-    )
-
+    property_no = data.get("property_no")
 
     if not property_no:
-
         raise HTTPException(
             status_code=400,
             detail="Property number is required"
         )
 
-
-    # -------------------------------------------------
-    # Selected template
-    # -------------------------------------------------
-
-    template_name = data.get(
-        "template",
-        "template.docx"
-    )
-
-
     # -------------------------------------------------
     # Find property
     # -------------------------------------------------
 
-    property = (
-        crud.get_property_by_number(
-            db,
-            property_no
-        )
+    property = crud.get_property_by_number(
+        db,
+        property_no
     )
 
-
     if not property:
-
         raise HTTPException(
             status_code=404,
             detail="Property not found"
         )
 
+    # -------------------------------------------------
+    # Select template
+    #
+    # If template_id is supplied:
+    #     Load template from notice_templates
+    #
+    # Otherwise:
+    #     Keep existing template behavior
+    # -------------------------------------------------
+
+    template_id = data.get("template_id")
+
+    if template_id is not None:
+
+        try:
+            template_id = int(template_id)
+        except (TypeError, ValueError):
+
+            raise HTTPException(
+                status_code=400,
+                detail="template_id must be an integer"
+            )
+
+        template_record = (
+            db.query(NoticeTemplate)
+            .filter(
+                NoticeTemplate.id == template_id
+            )
+            .first()
+        )
+
+        if not template_record:
+
+            raise HTTPException(
+                status_code=404,
+                detail="Template not found"
+            )
+
+        template_name = template_record.filename
+
+    else:
+
+        # -------------------------------------------------
+        # Backward compatibility
+        # -------------------------------------------------
+
+        template_name = data.get(
+            "template",
+            "template.docx"
+        )
 
     # -------------------------------------------------
     # Generate PDF
@@ -246,9 +277,11 @@ async def generate_notice(
             detail=str(error)
         )
 
+    # -------------------------------------------------
+    # Response
+    # -------------------------------------------------
 
     return {
-
         "message":
             "Notice generated successfully",
 
@@ -256,6 +289,9 @@ async def generate_notice(
             pdf_file,
 
         "template":
-            template_name
+            template_name,
 
+        "template_id":
+            template_id
     }
+```
