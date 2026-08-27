@@ -10,6 +10,7 @@ from pathlib import Path
 
 from app.database import get_db
 from app import crud
+from app.models import NoticeTemplate
 from app.pdf_generator import generate_notice_pdf
 
 
