@@ -18,7 +18,7 @@ tags=["Properties"]
 
 # =====================================================
 
-BASE_DIR = Path(**file**).resolve().parents[2]
+BASE_DIR = Path(__file__).resolve().parents[2]
 TEMPLATES_FOLDER = BASE_DIR / "templates"
 
 # =====================================================
