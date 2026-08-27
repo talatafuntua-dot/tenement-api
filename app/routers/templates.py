@@ -1,8 +1,8 @@
-import os
-import shutil
-
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from sqlalchemy.orm import Session
+from pathlib import Path
+import shutil
+import re
 
 from app.database import get_db
 from app.models import NoticeTemplate
@@ -14,41 +14,61 @@ router = APIRouter(
 )
 
 
-TEMPLATE_DIR = "/app/templates"
-
-os.makedirs(TEMPLATE_DIR, exist_ok=True)
+TEMPLATE_DIR = Path("/app/templates")
+TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @router.post("/upload")
 def upload_template(
-    name: str = Form(...),
-    description: str = Form(""),
     file: UploadFile = File(...),
+    description: str = Form(""),
     db: Session = Depends(get_db)
 ):
+    # --------------------------------------------------
+    # Validate file
+    # --------------------------------------------------
+
     if not file.filename:
         raise HTTPException(
             status_code=400,
             detail="No file selected."
         )
 
-    if not file.filename.lower().endswith(".docx"):
+    original_filename = Path(file.filename).name
+
+    # Only DOCX templates
+    if not original_filename.lower().endswith(".docx"):
         raise HTTPException(
             status_code=400,
-            detail="Only Microsoft Word .docx files are allowed."
+            detail="Only .docx template files are allowed."
         )
 
-    name = name.strip()
+    # --------------------------------------------------
+    # Create clean template name from filename
+    # --------------------------------------------------
 
-    if not name:
+    template_name = Path(original_filename).stem
+
+    # Remove unwanted characters
+    template_name = re.sub(
+        r"[^A-Za-z0-9_\- ]+",
+        "",
+        template_name
+    ).strip()
+
+    if not template_name:
         raise HTTPException(
             status_code=400,
-            detail="Template name is required."
+            detail="Invalid template filename."
         )
+
+    # --------------------------------------------------
+    # Check duplicate template name
+    # --------------------------------------------------
 
     existing = (
         db.query(NoticeTemplate)
-        .filter(NoticeTemplate.name == name)
+        .filter(NoticeTemplate.name == template_name)
         .first()
     )
 
@@ -58,52 +78,58 @@ def upload_template(
             detail="A template with this name already exists."
         )
 
-    safe_filename = os.path.basename(file.filename)
+    # --------------------------------------------------
+    # Check duplicate filename
+    # --------------------------------------------------
 
-    file_path = os.path.join(
-        TEMPLATE_DIR,
-        safe_filename
+    existing_file = (
+        db.query(NoticeTemplate)
+        .filter(NoticeTemplate.filename == original_filename)
+        .first()
     )
 
-    try:
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(
-                file.file,
-                buffer
-            )
-
-    except Exception as e:
+    if existing_file:
         raise HTTPException(
-            status_code=500,
-            detail=f"Unable to save template: {str(e)}"
+            status_code=400,
+            detail="A template with this filename already exists."
         )
 
+    # --------------------------------------------------
+    # Save physical DOCX file
+    # --------------------------------------------------
+
+    destination = TEMPLATE_DIR / original_filename
+
+    try:
+        with destination.open("wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not save template: {exc}"
+        )
+
+    # --------------------------------------------------
+    # Save database record
+    # --------------------------------------------------
+
     template = NoticeTemplate(
-        name=name,
-        filename=safe_filename,
-        file_path=file_path,
-        description=description.strip()
+        name=template_name,
+        filename=original_filename,
+        description=description or ""
     )
 
     db.add(template)
+    db.commit()
+    db.refresh(template)
 
-    try:
-        db.commit()
-        db.refresh(template)
-
-    except Exception as e:
-        db.rollback()
-
-        if os.path.exists(file_path):
-            os.remove(file_path)
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"Unable to save template information: {str(e)}"
-        )
+    # --------------------------------------------------
+    # Return result
+    # --------------------------------------------------
 
     return {
-        "message": "Template uploaded successfully.",
+        "message": "Template uploaded successfully",
         "template": {
             "id": template.id,
             "name": template.name,
@@ -120,7 +146,7 @@ def get_templates(
 ):
     templates = (
         db.query(NoticeTemplate)
-        .order_by(NoticeTemplate.name)
+        .order_by(NoticeTemplate.id)
         .all()
     )
 
