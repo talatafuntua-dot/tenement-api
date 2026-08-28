@@ -1,5 +1,14 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
+from fastapi import (
+    APIRouter,
+    UploadFile,
+    File,
+    Form,
+    HTTPException,
+    Depends
+)
+
 from sqlalchemy.orm import Session
+
 from pathlib import Path
 import shutil
 
@@ -13,9 +22,9 @@ router = APIRouter(
 )
 
 
-# ---------------------------------------------------------
-# TEMPLATE STORAGE DIRECTORY
-# ---------------------------------------------------------
+# =========================================================
+# TEMPLATE STORAGE
+# =========================================================
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 
@@ -27,14 +36,15 @@ TEMPLATE_DIR.mkdir(
 )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # GET ALL TEMPLATES
-# ---------------------------------------------------------
+# =========================================================
 
 @router.get("/")
 def get_templates(
     db: Session = Depends(get_db)
 ):
+
     templates = (
         db.query(NoticeTemplate)
         .order_by(NoticeTemplate.id.desc())
@@ -53,22 +63,26 @@ def get_templates(
     ]
 
 
-# ---------------------------------------------------------
+# =========================================================
 # GET SINGLE TEMPLATE
-# ---------------------------------------------------------
+# =========================================================
 
 @router.get("/{template_id}")
 def get_template(
     template_id: int,
     db: Session = Depends(get_db)
 ):
+
     template = (
         db.query(NoticeTemplate)
-        .filter(NoticeTemplate.id == template_id)
+        .filter(
+            NoticeTemplate.id == template_id
+        )
         .first()
     )
 
     if not template:
+
         raise HTTPException(
             status_code=404,
             detail="Template not found."
@@ -83,9 +97,9 @@ def get_template(
     }
 
 
-# ---------------------------------------------------------
+# =========================================================
 # UPLOAD TEMPLATE
-# ---------------------------------------------------------
+# =========================================================
 
 @router.post("/upload")
 def upload_template(
@@ -95,42 +109,45 @@ def upload_template(
 ):
 
     # -----------------------------------------------------
-    # CHECK FILE
+    # Validate filename
     # -----------------------------------------------------
 
     if not file.filename:
+
         raise HTTPException(
             status_code=400,
             detail="No file was provided."
         )
 
-
     # -----------------------------------------------------
-    # ONLY ALLOW WORD DOCUMENTS
+    # Validate extension
     # -----------------------------------------------------
 
-    extension = Path(file.filename).suffix.lower()
+    extension = Path(
+        file.filename
+    ).suffix.lower()
 
     if extension != ".docx":
+
         raise HTTPException(
             status_code=400,
             detail="Only .docx Word templates are allowed."
         )
 
-
     # -----------------------------------------------------
-    # CLEAN FILE NAME
+    # Clean filename
     # -----------------------------------------------------
 
-    original_filename = Path(file.filename).name
+    original_filename = Path(
+        file.filename
+    ).name
 
     template_name = Path(
         original_filename
     ).stem
 
-
     # -----------------------------------------------------
-    # CHECK DUPLICATE TEMPLATE
+    # Check duplicate
     # -----------------------------------------------------
 
     existing = (
@@ -142,23 +159,23 @@ def upload_template(
     )
 
     if existing:
+
         raise HTTPException(
             status_code=400,
             detail="A template with this name already exists."
         )
 
+    # -----------------------------------------------------
+    # File destination
+    # -----------------------------------------------------
+
+    destination = (
+        TEMPLATE_DIR /
+        original_filename
+    )
 
     # -----------------------------------------------------
-    # CREATE FILE PATH
-    # -----------------------------------------------------
-
-    destination = TEMPLATE_DIR / original_filename
-
-    file_path = str(destination)
-
-
-    # -----------------------------------------------------
-    # SAVE UPLOADED FILE
+    # Save file
     # -----------------------------------------------------
 
     try:
@@ -177,18 +194,27 @@ def upload_template(
             detail=f"Could not save template file: {exc}"
         )
 
+    # -----------------------------------------------------
+    # Verify file actually exists
+    # -----------------------------------------------------
+
+    if not destination.exists():
+
+        raise HTTPException(
+            status_code=500,
+            detail="Template file was not created."
+        )
 
     # -----------------------------------------------------
-    # CREATE DATABASE RECORD
+    # Create database record
     # -----------------------------------------------------
 
     template = NoticeTemplate(
         name=template_name,
         filename=original_filename,
-        file_path=file_path,
+        file_path=str(destination),
         description=description
     )
-
 
     db.add(template)
 
@@ -202,8 +228,6 @@ def upload_template(
 
         db.rollback()
 
-        # Remove uploaded file if database insertion fails
-
         if destination.exists():
 
             destination.unlink()
@@ -213,9 +237,8 @@ def upload_template(
             detail=f"Could not save template to database: {exc}"
         )
 
-
     # -----------------------------------------------------
-    # RESPONSE
+    # Response
     # -----------------------------------------------------
 
     return {
