@@ -8,261 +8,165 @@ from app.models import NoticeTemplate
 from app.pdf_generator import generate_notice_pdf
 
 router = APIRouter(
-prefix="/properties",
-tags=["Properties"]
+    prefix="/properties",
+    tags=["Properties"]
 )
-
-# =====================================================
-
-# TEMPLATE LOCATION
-
-# =====================================================
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 TEMPLATES_FOLDER = BASE_DIR / "templates"
 
-# =====================================================
-
-# GET PROPERTIES
-
-# =====================================================
 
 @router.get("/")
 def get_properties(
-skip: int = 0,
-limit: int = 100,
-db: Session = Depends(get_db)
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db)
 ):
-return crud.get_all_properties(
-db,
-skip,
-limit
-)
+    return crud.get_all_properties(db, skip, limit)
 
-# =====================================================
-
-# UNIVERSAL PROPERTY SEARCH
-
-# =====================================================
 
 @router.get("/search")
 def search_properties(
-query: str,
-db: Session = Depends(get_db)
+    query: str,
+    db: Session = Depends(get_db)
 ):
-return crud.search_properties(
-db,
-query
-)
+    return crud.search_properties(db, query)
 
-# =====================================================
-
-# SEARCH BY OWNER
-
-# =====================================================
 
 @router.get("/search/owner")
 def search_by_owner(
-owner_name: str,
-db: Session = Depends(get_db)
+    owner_name: str,
+    db: Session = Depends(get_db)
 ):
-return crud.search_owner(
-db,
-owner_name
-)
+    return crud.search_owner(db, owner_name)
 
-# =====================================================
-
-# AVAILABLE TEMPLATES
-
-# =====================================================
 
 @router.get("/templates")
 def get_templates():
 
-```
-if not TEMPLATES_FOLDER.exists():
-    return {
-        "templates": []
-    }
+    if not TEMPLATES_FOLDER.exists():
+        return {"templates": []}
 
-templates = []
+    templates = []
 
-for file in sorted(
-    TEMPLATES_FOLDER.glob("*.docx")
-):
-    templates.append(
-        {
+    for file in sorted(TEMPLATES_FOLDER.glob("*.docx")):
+        templates.append({
             "name": file.name,
-            "label": file.stem.replace(
-                "_",
-                " "
-            ).title()
-        }
-    )
+            "label": file.stem.replace("_", " ").title()
+        })
 
-return {
-    "templates": templates
-}
-```
+    return {"templates": templates}
 
-# =====================================================
-
-# GENERATE NOTICE
-
-# =====================================================
 
 @router.post("/generate-notice")
 async def generate_notice(
-data: dict,
-db: Session = Depends(get_db)
+    data: dict,
+    db: Session = Depends(get_db)
 ):
 
-```
-property_no = data.get("property_no")
+    property_no = data.get("property_no")
 
-if not property_no:
-    raise HTTPException(
-        status_code=400,
-        detail="Property number is required"
-    )
-
-# -------------------------------------------------
-# Find property
-# -------------------------------------------------
-
-property = crud.get_property_by_number(
-    db,
-    property_no
-)
-
-if not property:
-    raise HTTPException(
-        status_code=404,
-        detail="Property not found"
-    )
-
-# -------------------------------------------------
-# Select template
-# -------------------------------------------------
-
-template_id = data.get("template_id")
-
-if template_id is not None:
-
-    try:
-        template_id = int(template_id)
-
-    except (TypeError, ValueError):
+    if not property_no:
         raise HTTPException(
             status_code=400,
-            detail="template_id must be an integer"
+            detail="Property number is required"
         )
 
-    template_record = (
-        db.query(NoticeTemplate)
-        .filter(
-            NoticeTemplate.id == template_id
-        )
-        .first()
+    property_record = crud.get_property_by_number(
+        db,
+        property_no
     )
 
-    if not template_record:
+    if not property_record:
         raise HTTPException(
             status_code=404,
-            detail="Template not found"
+            detail="Property not found"
         )
 
-    template_name = template_record.filename
+    template_id = data.get("template_id")
 
-else:
+    if template_id is not None:
 
-    # -------------------------------------------------
-    # Backward compatibility
-    # -------------------------------------------------
+        try:
+            template_id = int(template_id)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail="template_id must be an integer"
+            )
 
-    template_name = data.get(
-        "template",
-        "template.docx"
-    )
+        template_record = (
+            db.query(NoticeTemplate)
+            .filter(NoticeTemplate.id == template_id)
+            .first()
+        )
 
-# -------------------------------------------------
-# Generate PDF
-# -------------------------------------------------
+        if not template_record:
+            raise HTTPException(
+                status_code=404,
+                detail="Template not found"
+            )
 
-try:
+        template_name = template_record.filename
 
-    pdf_file = generate_notice_pdf(
-        property,
-        template_name
-    )
+    else:
 
-except FileNotFoundError as error:
+        template_name = data.get(
+            "template",
+            "template.docx"
+        )
 
-    raise HTTPException(
-        status_code=404,
-        detail=str(error)
-    )
+    try:
 
-except ValueError as error:
+        pdf_file = generate_notice_pdf(
+            property_record,
+            template_name
+        )
 
-    raise HTTPException(
-        status_code=400,
-        detail=str(error)
-    )
+    except FileNotFoundError as error:
 
-except Exception as error:
+        raise HTTPException(
+            status_code=404,
+            detail=str(error)
+        )
 
-    raise HTTPException(
-        status_code=500,
-        detail=str(error)
-    )
+    except ValueError as error:
 
-# -------------------------------------------------
-# Response
-# -------------------------------------------------
+        raise HTTPException(
+            status_code=400,
+            detail=str(error)
+        )
 
-return {
-    "message": "Notice generated successfully",
-    "pdf": pdf_file,
-    "template": template_name,
-    "template_id": template_id
-}
-```
+    except Exception as error:
 
-# =====================================================
+        raise HTTPException(
+            status_code=500,
+            detail=str(error)
+        )
 
-# GET PROPERTY
+    return {
+        "message": "Notice generated successfully",
+        "pdf": pdf_file,
+        "template": template_name,
+        "template_id": template_id
+    }
 
-#
-
-# Accepts property numbers containing "/"
-
-#
-
-# This catch-all route MUST remain after the
-
-# specific routes above.
-
-# =====================================================
 
 @router.get("/{property_no:path}")
 def get_property(
-property_no: str,
-db: Session = Depends(get_db)
+    property_no: str,
+    db: Session = Depends(get_db)
 ):
 
-```
-property = crud.get_property_by_number(
-    db,
-    property_no
-)
-
-if not property:
-    raise HTTPException(
-        status_code=404,
-        detail="Property not found"
+    property_record = crud.get_property_by_number(
+        db,
+        property_no
     )
 
-return property
-```
+    if not property_record:
+        raise HTTPException(
+            status_code=404,
+            detail="Property not found"
+        )
+
+    return property_record
