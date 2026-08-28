@@ -23,7 +23,7 @@ router = APIRouter(
 
 
 # =========================================================
-# TEMPLATE STORAGE
+# TEMPLATE STORAGE DIRECTORY
 # =========================================================
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -88,17 +88,28 @@ def get_template(
             detail="Template not found."
         )
 
+    # Check physical file
+    file_exists = False
+
+    if template.file_path:
+
+        file_exists = Path(
+            template.file_path
+        ).exists()
+
     return {
         "id": template.id,
         "name": template.name,
         "filename": template.filename,
         "description": template.description,
+        "file_path": template.file_path,
+        "file_exists": file_exists,
         "created_at": template.created_at
     }
 
 
 # =========================================================
-# UPLOAD TEMPLATE
+# UPLOAD / RESTORE TEMPLATE
 # =========================================================
 
 @router.post("/upload")
@@ -108,9 +119,9 @@ def upload_template(
     db: Session = Depends(get_db)
 ):
 
-    # -----------------------------------------------------
-    # Validate filename
-    # -----------------------------------------------------
+    # =====================================================
+    # CHECK FILE
+    # =====================================================
 
     if not file.filename:
 
@@ -119,9 +130,10 @@ def upload_template(
             detail="No file was provided."
         )
 
-    # -----------------------------------------------------
-    # Validate extension
-    # -----------------------------------------------------
+
+    # =====================================================
+    # ONLY DOCX
+    # =====================================================
 
     extension = Path(
         file.filename
@@ -134,9 +146,10 @@ def upload_template(
             detail="Only .docx Word templates are allowed."
         )
 
-    # -----------------------------------------------------
-    # Clean filename
-    # -----------------------------------------------------
+
+    # =====================================================
+    # CLEAN FILE NAME
+    # =====================================================
 
     original_filename = Path(
         file.filename
@@ -146,9 +159,24 @@ def upload_template(
         original_filename
     ).stem
 
-    # -----------------------------------------------------
-    # Check duplicate
-    # -----------------------------------------------------
+
+    # =====================================================
+    # DESTINATION
+    # =====================================================
+
+    destination = (
+        TEMPLATE_DIR /
+        original_filename
+    )
+
+    file_path = str(
+        destination
+    )
+
+
+    # =====================================================
+    # CHECK EXISTING DATABASE RECORD
+    # =====================================================
 
     existing = (
         db.query(NoticeTemplate)
@@ -158,25 +186,127 @@ def upload_template(
         .first()
     )
 
+
+    # =====================================================
+    # EXISTING TEMPLATE
+    # =====================================================
+
     if existing:
 
-        raise HTTPException(
-            status_code=400,
-            detail="A template with this name already exists."
+        # -------------------------------------------------
+        # If the physical file already exists
+        # -------------------------------------------------
+
+        if destination.exists():
+
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "A template with this name already exists "
+                    "and its file is present."
+                )
+            )
+
+
+        # -------------------------------------------------
+        # DATABASE RECORD EXISTS BUT FILE IS MISSING
+        #
+        # Restore the physical file.
+        # Keep the same database ID.
+        # -------------------------------------------------
+
+        try:
+
+            with destination.open("wb") as buffer:
+
+                shutil.copyfileobj(
+                    file.file,
+                    buffer
+                )
+
+        except Exception as exc:
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Could not restore template file: {exc}"
+                )
+            )
+
+
+        # -------------------------------------------------
+        # Verify restored file
+        # -------------------------------------------------
+
+        if not destination.exists():
+
+            raise HTTPException(
+                status_code=500,
+                detail="Template file was not created."
+            )
+
+
+        # -------------------------------------------------
+        # Update existing database record
+        # -------------------------------------------------
+
+        existing.filename = (
+            original_filename
         )
 
-    # -----------------------------------------------------
-    # File destination
-    # -----------------------------------------------------
+        existing.file_path = (
+            file_path
+        )
 
-    destination = (
-        TEMPLATE_DIR /
-        original_filename
-    )
+        existing.description = (
+            description
+        )
 
-    # -----------------------------------------------------
-    # Save file
-    # -----------------------------------------------------
+        try:
+
+            db.commit()
+
+            db.refresh(existing)
+
+        except Exception as exc:
+
+            db.rollback()
+
+            if destination.exists():
+
+                destination.unlink()
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Could not update existing template: "
+                    f"{exc}"
+                )
+            )
+
+
+        # -------------------------------------------------
+        # RESTORED RESPONSE
+        # -------------------------------------------------
+
+        return {
+            "message": (
+                "Existing template restored successfully."
+            ),
+            "template": {
+                "id": existing.id,
+                "name": existing.name,
+                "filename": existing.filename,
+                "description": existing.description,
+                "file_path": existing.file_path,
+                "created_at": existing.created_at
+            }
+        }
+
+
+    # =====================================================
+    # NEW TEMPLATE
+    # =====================================================
 
     try:
 
@@ -191,12 +321,15 @@ def upload_template(
 
         raise HTTPException(
             status_code=500,
-            detail=f"Could not save template file: {exc}"
+            detail=(
+                f"Could not save template file: {exc}"
+            )
         )
 
-    # -----------------------------------------------------
-    # Verify file actually exists
-    # -----------------------------------------------------
+
+    # =====================================================
+    # VERIFY FILE
+    # =====================================================
 
     if not destination.exists():
 
@@ -205,14 +338,15 @@ def upload_template(
             detail="Template file was not created."
         )
 
-    # -----------------------------------------------------
-    # Create database record
-    # -----------------------------------------------------
+
+    # =====================================================
+    # CREATE DATABASE RECORD
+    # =====================================================
 
     template = NoticeTemplate(
         name=template_name,
         filename=original_filename,
-        file_path=str(destination),
+        file_path=file_path,
         description=description
     )
 
@@ -234,12 +368,15 @@ def upload_template(
 
         raise HTTPException(
             status_code=500,
-            detail=f"Could not save template to database: {exc}"
+            detail=(
+                f"Could not save template to database: {exc}"
+            )
         )
 
-    # -----------------------------------------------------
-    # Response
-    # -----------------------------------------------------
+
+    # =====================================================
+    # RESPONSE
+    # =====================================================
 
     return {
         "message": "Template uploaded successfully.",
