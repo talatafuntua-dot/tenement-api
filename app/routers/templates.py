@@ -17,7 +17,9 @@ router = APIRouter(
 # TEMPLATE STORAGE DIRECTORY
 # ---------------------------------------------------------
 
-TEMPLATE_DIR = Path("/app/templates")
+BASE_DIR = Path(__file__).resolve().parents[2]
+
+TEMPLATE_DIR = BASE_DIR / "templates"
 
 TEMPLATE_DIR.mkdir(
     parents=True,
