@@ -6,50 +6,89 @@ from app.word_converter import WordConverter
 from app.formatter import prepare_row
 
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+# =====================================================
+# DIRECTORIES
+# =====================================================
+
+APP_DIR = Path(__file__).resolve().parent
+
+BASE_DIR = APP_DIR.parent
 
 TEMPLATES_FOLDER = BASE_DIR / "templates"
 
 OUTPUT_FOLDER = BASE_DIR / "output_pdfs"
 
 
+# =====================================================
+# GENERATE NOTICE PDF
+# =====================================================
+
 def generate_notice_pdf(
     property_record,
     template_name="template.docx"
 ):
 
-    os.makedirs(
-        OUTPUT_FOLDER,
+    # -------------------------------------------------
+    # Create output directory
+    # -------------------------------------------------
+
+    OUTPUT_FOLDER.mkdir(
+        parents=True,
         exist_ok=True
     )
 
-
-    # =====================================================
-    # VALIDATE TEMPLATE NAME
-    # =====================================================
+    # -------------------------------------------------
+    # Validate template name
+    # -------------------------------------------------
 
     if not template_name:
+
         template_name = "template.docx"
 
-
-    # Prevent directory traversal
+    # Only allow filename, not paths
     template_name = Path(
         template_name
     ).name
 
+    # -------------------------------------------------
+    # Template path
+    # -------------------------------------------------
 
     template_file = (
         TEMPLATES_FOLDER /
         template_name
     )
 
+    # -------------------------------------------------
+    # Debug information
+    # -------------------------------------------------
+
+    print(
+        f"Looking for template: {template_file}"
+    )
+
+    print(
+        f"Template exists: {template_file.exists()}"
+    )
+
+    # -------------------------------------------------
+    # Validate template
+    # -------------------------------------------------
 
     if not template_file.exists():
 
         raise FileNotFoundError(
-            f"Template not found: {template_name}"
+            f"Template not found: "
+            f"{template_name} "
+            f"at {template_file}"
         )
 
+    if not template_file.is_file():
+
+        raise FileNotFoundError(
+            f"Template is not a file: "
+            f"{template_file}"
+        )
 
     if template_file.suffix.lower() != ".docx":
 
@@ -57,15 +96,17 @@ def generate_notice_pdf(
             "Only DOCX templates are supported."
         )
 
-
-    # =====================================================
+    # =================================================
     # PREPARE DATA
-    # =====================================================
+    # =================================================
 
-    data = prepare_row(property_record)
+    data = prepare_row(
+        property_record
+    )
 
-
-    # Map database fields to template placeholders
+    # -------------------------------------------------
+    # Template placeholders
+    # -------------------------------------------------
 
     data["NAME_OF_OCCUPIER"] = \
         data.get("OWNER_NAME", "")
@@ -85,10 +126,9 @@ def generate_notice_pdf(
     data["RATE_1"] = \
         data.get("RATE_DUE", "")
 
-
-    # =====================================================
+    # =================================================
     # DEFAULT VALUES
-    # =====================================================
+    # =================================================
 
     defaults = {
 
@@ -108,9 +148,7 @@ def generate_notice_pdf(
         "TOTAL_1": "",
         "TOTAL_2": "",
         "TOTAL_3": "",
-
     }
-
 
     for key, value in defaults.items():
 
@@ -119,37 +157,37 @@ def generate_notice_pdf(
             value
         )
 
+    # =================================================
+    # OUTPUT NAMES
+    # =================================================
 
-    # =====================================================
-    # OUTPUT FILE NAMES
-    # =====================================================
-
-    pdf_name = (
-        f"{data['ASSESSMENT_NO'].replace('/', '_')}.pdf"
-    )
-
-
-    docx_file = (
-        OUTPUT_FOLDER /
-        pdf_name.replace(
-            ".pdf",
-            ".docx"
+    assessment_no = str(
+        data.get(
+            "ASSESSMENT_NO",
+            "notice"
         )
     )
 
+    safe_name = assessment_no.replace(
+        "/",
+        "_"
+    )
 
     pdf_file = (
         OUTPUT_FOLDER /
-        pdf_name
+        f"{safe_name}.pdf"
     )
 
+    docx_file = (
+        OUTPUT_FOLDER /
+        f"{safe_name}.docx"
+    )
 
-    # =====================================================
-    # RENDER WORD TEMPLATE
-    # =====================================================
+    # =================================================
+    # RENDER TEMPLATE
+    # =================================================
 
     engine = TemplateEngine()
-
 
     engine.render(
         str(template_file),
@@ -157,10 +195,9 @@ def generate_notice_pdf(
         data
     )
 
-
-    # =====================================================
+    # =================================================
     # CONVERT DOCX → PDF
-    # =====================================================
+    # =================================================
 
     with WordConverter() as word:
 
@@ -169,19 +206,20 @@ def generate_notice_pdf(
             str(pdf_file)
         )
 
-
     if not ok:
 
         raise Exception(msg)
 
+    # =================================================
+    # REMOVE TEMP DOCX
+    # =================================================
 
-    # =====================================================
-    # DELETE TEMPORARY DOCX
-    # =====================================================
+    if docx_file.exists():
 
-    if os.path.exists(docx_file):
+        docx_file.unlink()
 
-        os.remove(docx_file)
-
+    # =================================================
+    # RETURN PDF
+    # =================================================
 
     return str(pdf_file)
