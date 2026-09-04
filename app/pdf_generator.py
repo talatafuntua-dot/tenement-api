@@ -280,18 +280,18 @@ def generate_notice_pdf(
     # DELETE TEMPORARY DOCX
     # =====================================================
 
-    if docx_file.exists():
+    # if docx_file.exists():
 
-        try:
+    #     try:
 
-            docx_file.unlink()
+    #         docx_file.unlink()
 
-        except Exception as exc:
+    #     except Exception as exc:
 
-            print(
-                f"Warning: could not delete "
-                f"temporary DOCX: {exc}"
-            )
+    #         print(
+    #             f"Warning: could not delete "
+    #             f"temporary DOCX: {exc}"
+    #         )
 
     # =====================================================
     # RETURN PDF
