@@ -11,6 +11,7 @@ Features
 ✓ Replace placeholders in headers
 ✓ Replace placeholders in footers
 ✓ Detect unresolved placeholders
+✓ Prevent table rows from splitting across pages
 """
 
 import re
@@ -74,13 +75,41 @@ class TemplateEngine:
 
         for row in table.rows:
 
+            # IMPORTANT:
+            # Prevent Word from splitting this table row
+            # across two pages.
+            self._prevent_row_split(row)
+
             for cell in row.cells:
 
                 for paragraph in cell.paragraphs:
                     self._replace_paragraph(paragraph, data)
 
+                # Process nested tables
                 for nested in cell.tables:
                     self._process_table(nested, data)
+
+    # -------------------------------------------------
+    # Prevent table row splitting
+    # -------------------------------------------------
+
+    def _prevent_row_split(self, row):
+
+        trPr = row._tr.get_or_add_trPr()
+
+        # Remove an existing cantSplit setting
+        for element in trPr.findall(
+            "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}cantSplit"
+        ):
+            trPr.remove(element)
+
+        # Add cantSplit
+        cant_split = row._tr.get_or_add_trPr()
+
+        from docx.oxml import OxmlElement
+
+        element = OxmlElement("w:cantSplit")
+        cant_split.append(element)
 
     # -------------------------------------------------
     # Paragraph replacement
@@ -120,14 +149,23 @@ class TemplateEngine:
         first_style = None
 
         if paragraph.runs:
-            first_style = deepcopy(paragraph.runs[0]._element.rPr)
+            first_style = deepcopy(
+                paragraph.runs[0]._element.rPr
+            )
 
         # Remove all runs
         while paragraph.runs:
+
             run = paragraph.runs[0]._element
+
             run.getparent().remove(run)
 
+        # Create replacement run
         new_run = paragraph.add_run(updated)
 
+        # Restore original formatting
         if first_style is not None:
-            new_run._element.get_or_add_rPr().append(first_style)
+
+            new_run._element.get_or_add_rPr().append(
+                first_style
+            )
