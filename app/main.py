@@ -13,14 +13,20 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Allow requests from your WordPress site
+```python
+# Allow requests from the WordPress site
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # Change this later to your WordPress domain
+    allow_origins=[
+        "https://gizow.infinityfree.me",
+        "http://gizow.infinityfree.me",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+```
+
 
 app.include_router(properties_router)
 app.include_router(pdf.router)
