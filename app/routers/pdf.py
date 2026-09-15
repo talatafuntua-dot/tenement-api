@@ -28,8 +28,8 @@ def download_pdf(filename: str):
     if not file_path.is_file():
         return {"error": "File not found"}
 
-    return FileResponse(
-    path=str(file_path),
-    media_type="application/pdf",
-    filename=filename
-)
+     return FileResponse(
+        path=str(file_path),
+        media_type="application/pdf",
+        filename=filename
+    )
