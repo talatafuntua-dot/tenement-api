@@ -29,7 +29,9 @@ def download_pdf(filename: str):
         return {"error": "File not found"}
 
     return FileResponse(
-        path=str(file_path),
-        media_type="application/pdf",
-        filename=filename
-    )
+    path=str(file_path),
+    media_type="application/pdf",
+    headers={
+        "Content-Disposition": f'inline; filename="{filename}"'
+    }
+)
