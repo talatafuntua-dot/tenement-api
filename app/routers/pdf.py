@@ -17,7 +17,12 @@ def download_pdf(filename: str):
     print("BASE_DIR:", BASE_DIR)
     print("OUTPUT_FOLDER:", OUTPUT_FOLDER)
     print("FOLDER EXISTS:", OUTPUT_FOLDER.exists())
-    print("FILES:", list(OUTPUT_FOLDER.iterdir()) if OUTPUT_FOLDER.exists() else [])
+    print(
+        "FILES:",
+        list(OUTPUT_FOLDER.iterdir())
+        if OUTPUT_FOLDER.exists()
+        else []
+    )
 
     file_path = OUTPUT_FOLDER / filename
 
@@ -28,7 +33,7 @@ def download_pdf(filename: str):
     if not file_path.is_file():
         return {"error": "File not found"}
 
-     return FileResponse(
+    return FileResponse(
         path=str(file_path),
         media_type="application/pdf",
         filename=filename
