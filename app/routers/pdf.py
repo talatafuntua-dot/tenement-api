@@ -33,22 +33,3 @@ def download_pdf(filename: str):
         media_type="application/pdf",
         filename=filename
     )
-
-@router.get("/print/{filename}")
-def print_pdf(filename: str):
-
-    file_path = OUTPUT_DIR / filename
-
-    if not file_path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="PDF file not found"
-        )
-
-    return FileResponse(
-        path=str(file_path),
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f'inline; filename="{filename}"'
-        }
-    )
