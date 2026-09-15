@@ -31,7 +31,5 @@ def download_pdf(filename: str):
     return FileResponse(
     path=str(file_path),
     media_type="application/pdf",
-    headers={
-        "Content-Disposition": f'inline; filename="{filename}"'
-    }
+    filename=filename
 )
