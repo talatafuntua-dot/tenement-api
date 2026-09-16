@@ -8,14 +8,17 @@ class TemplateEngine:
     """
     Surgical DOCX template renderer.
 
-    IMPORTANT:
-    This renderer deliberately does NOT use python-docx or lxml.
+    - Does NOT use python-docx.
+    - Does NOT use lxml.
+    - Does NOT rebuild paragraphs.
+    - Does NOT rebuild tables.
+    - Does NOT rebuild drawings/text boxes.
 
-    It preserves the original DOCX XML structure and changes only
-    the text contained inside <w:t> elements.
+    Placeholder text is replaced directly inside the original
+    DOCX XML.
 
-    This is important for templates containing floating text boxes,
-    drawings, images, signatures, and positioned shapes.
+    The bill-information table is additionally forced to use
+    fixed table layout so its existing column geometry is preserved.
     """
 
     TEXT_TAG_PATTERN = re.compile(
@@ -23,8 +26,35 @@ class TemplateEngine:
         re.DOTALL,
     )
 
-    PLACEHOLDER_PATTERN = re.compile(
-        r"\{\{[^{}]+\}\}"
+    TBL_PATTERN = re.compile(
+        rb"<w:tbl\b.*?</w:tbl>",
+        re.DOTALL,
+    )
+
+    TBL_PR_PATTERN = re.compile(
+        rb"<w:tblPr\b[^>]*>",
+        re.DOTALL,
+    )
+
+    TBL_LAYOUT_PATTERN = re.compile(
+        rb"<w:tblLayout\b[^>]*\/?>",
+        re.DOTALL,
+    )
+
+    BILL_PLACEHOLDER_MARKERS = (
+        b"{{ESTIMATED}}",
+        b"{{RATE_1}}",
+        b"{{RATE_2}}",
+        b"{{RATE_3}}",
+        b"{{ARREARS_1}}",
+        b"{{ARREARS_2}}",
+        b"{{ARREARS_3}}",
+        b"{{PER_1}}",
+        b"{{PER_2}}",
+        b"{{PER_3}}",
+        b"{{TOTAL_1}}",
+        b"{{TOTAL_2}}",
+        b"{{TOTAL_3}}",
     )
 
     def __init__(self):
@@ -35,20 +65,6 @@ class TemplateEngine:
     # ==========================================================
 
     def render(self, template_path, output_path, data):
-        """
-        Render a DOCX template.
-
-        Existing integration:
-
-            TemplateEngine().render(
-                template_path,
-                output_path,
-                data
-            )
-
-        Returns:
-            sorted list of missing placeholders
-        """
 
         self.missing_placeholders = set()
 
@@ -84,23 +100,25 @@ class TemplateEngine:
                         item.filename
                     )
 
-                    # Only process Word XML.
-                    #
-                    # Do NOT touch:
-                    # - images
-                    # - relationships
-                    # - settings
-                    # - styles
-                    # - numbering
-                    # - document properties
-                    # - media
-                    # - embedded objects
-                    #
-                    if self._is_word_xml(item.filename):
+                    if self._is_word_xml(
+                        item.filename
+                    ):
+
+                        # --------------------------------------------------
+                        # 1. Replace placeholders surgically.
+                        # --------------------------------------------------
 
                         content = self._replace_in_xml(
                             content,
                             replacements
+                        )
+
+                        # --------------------------------------------------
+                        # 2. Lock ONLY the bill-information table.
+                        # --------------------------------------------------
+
+                        content = self._fix_bill_table_layout(
+                            content
                         )
 
                     destination_zip.writestr(
@@ -133,13 +151,6 @@ class TemplateEngine:
             if not key:
                 continue
 
-            # --------------------------------------------------
-            # Accept:
-            #
-            # LG_CODE
-            # {{LG_CODE}}
-            # --------------------------------------------------
-
             if (
                 key.startswith("{{")
                 and
@@ -147,7 +158,13 @@ class TemplateEngine:
             ):
                 placeholder = key
             else:
-                placeholder = "{{" + key + "}}"
+                placeholder = (
+                    "{{"
+                    +
+                    key
+                    +
+                    "}}"
+                )
 
             if value is None:
                 value = ""
@@ -167,16 +184,9 @@ class TemplateEngine:
         if value is None:
             return ""
 
-        # Preserve ordinary strings exactly.
         if isinstance(value, str):
             return value
 
-        # Excel numeric values.
-        #
-        # Avoid displaying:
-        # 60000.0
-        #
-        # when the value is effectively an integer.
         if isinstance(value, float):
 
             if value.is_integer():
@@ -192,16 +202,14 @@ class TemplateEngine:
 
     def _is_word_xml(self, filename):
 
-        if not filename.startswith("word/"):
-            return False
-
-        if not filename.endswith(".xml"):
-            return False
-
-        return True
+        return (
+            filename.startswith("word/")
+            and
+            filename.endswith(".xml")
+        )
 
     # ==========================================================
-    # XML PROCESSING
+    # SURGICAL TEXT REPLACEMENT
     # ==========================================================
 
     def _replace_in_xml(
@@ -209,14 +217,6 @@ class TemplateEngine:
         xml_bytes,
         replacements
     ):
-        """
-        Replace placeholders without rebuilding the XML tree.
-
-        Only the contents of <w:t> elements are changed.
-        All XML structure, attributes, shapes, tables, drawings,
-        positioning information and other document content remain
-        untouched.
-        """
 
         matches = list(
             self.TEXT_TAG_PATTERN.finditer(
@@ -226,10 +226,6 @@ class TemplateEngine:
 
         if not matches:
             return xml_bytes
-
-        # ------------------------------------------------------
-        # Extract the original text-node contents.
-        # ------------------------------------------------------
 
         nodes = []
 
@@ -256,7 +252,7 @@ class TemplateEngine:
             )
 
         # ------------------------------------------------------
-        # Process every placeholder.
+        # Replace every placeholder.
         # ------------------------------------------------------
 
         for placeholder, replacement in replacements.items():
@@ -268,11 +264,10 @@ class TemplateEngine:
             )
 
         # ------------------------------------------------------
-        # Reconstruct the ORIGINAL XML bytes.
+        # Rebuild only the contents of w:t elements.
         #
-        # Only w:t contents are replaced.
-        # Everything between those text nodes is copied directly
-        # from the original XML.
+        # Everything outside those text contents is copied
+        # directly from the original XML.
         # ------------------------------------------------------
 
         output = bytearray()
@@ -283,7 +278,6 @@ class TemplateEngine:
 
             node = nodes[index]
 
-            # Original XML before this text body.
             output.extend(
                 xml_bytes[
                     previous_end:
@@ -291,19 +285,18 @@ class TemplateEngine:
                 ]
             )
 
-            new_text = self._xml_escape(
+            escaped_text = self._xml_escape(
                 node["text"]
             )
 
             output.extend(
-                new_text.encode(
+                escaped_text.encode(
                     "utf-8"
                 )
             )
 
             previous_end = match.end(2)
 
-        # Remaining original XML.
         output.extend(
             xml_bytes[
                 previous_end:
@@ -313,7 +306,7 @@ class TemplateEngine:
         return bytes(output)
 
     # ==========================================================
-    # PLACEHOLDER REPLACEMENT
+    # PLACEHOLDER REPLACEMENT ACROSS WORD RUNS
     # ==========================================================
 
     def _replace_placeholder_across_nodes(
@@ -322,30 +315,9 @@ class TemplateEngine:
         placeholder,
         replacement
     ):
-        """
-        Replace a placeholder even when Word has split it across
-        multiple runs/text nodes.
-
-        Example:
-
-            <w:t>{{LG_</w:t>
-            <w:t>CODE}}</w:t>
-
-        becomes:
-
-            <w:t>GUS-12345678</w:t>
-            <w:t></w:t>
-
-        The surrounding XML remains untouched.
-        """
 
         if not placeholder:
             return
-
-        # ------------------------------------------------------
-        # We may need to replace the same placeholder more than
-        # once in the document.
-        # ------------------------------------------------------
 
         search_start = 0
 
@@ -355,10 +327,6 @@ class TemplateEngine:
             mapping = []
 
             found = False
-
-            # --------------------------------------------------
-            # Build text progressively from the current node.
-            # --------------------------------------------------
 
             for index in range(
                 search_start,
@@ -386,15 +354,6 @@ class TemplateEngine:
                     found = True
                     break
 
-                # Prevent unlimited accumulation where possible.
-                #
-                # A placeholder is short, so once the accumulated
-                # text becomes large and the placeholder cannot
-                # possibly cross the boundary, we can still
-                # continue normally.
-                #
-                # No structural document changes occur here.
-
             if not found:
                 break
 
@@ -407,10 +366,6 @@ class TemplateEngine:
                 +
                 len(placeholder)
             )
-
-            # --------------------------------------------------
-            # Identify the text nodes containing the placeholder.
-            # --------------------------------------------------
 
             affected = []
 
@@ -443,7 +398,7 @@ class TemplateEngine:
             last_node_end = affected[-1][2]
 
             # --------------------------------------------------
-            # Prefix before placeholder.
+            # Text before placeholder.
             # --------------------------------------------------
 
             prefix_length = (
@@ -457,7 +412,7 @@ class TemplateEngine:
             ]
 
             # --------------------------------------------------
-            # Suffix after placeholder.
+            # Text after placeholder.
             # --------------------------------------------------
 
             suffix_length = (
@@ -477,7 +432,7 @@ class TemplateEngine:
                 suffix = ""
 
             # --------------------------------------------------
-            # Replacement.
+            # Same text node.
             # --------------------------------------------------
 
             if first_index == last_index:
@@ -490,6 +445,10 @@ class TemplateEngine:
                     suffix
                 )
 
+            # --------------------------------------------------
+            # Placeholder spans multiple Word runs.
+            # --------------------------------------------------
+
             else:
 
                 first_node["text"] = (
@@ -498,37 +457,147 @@ class TemplateEngine:
                     replacement
                 )
 
-                # Empty the nodes between first and last.
+                # Empty middle nodes.
                 for index in range(
                     first_index + 1,
                     last_index
                 ):
+
                     nodes[index]["text"] = ""
 
-                # Preserve the suffix in the final node.
+                # Preserve final suffix.
                 nodes[last_index]["text"] = suffix
-
-            # --------------------------------------------------
-            # This placeholder has now been replaced.
-            # Continue searching after the first affected node.
-            # --------------------------------------------------
 
             search_start = first_index + 1
 
-        # ------------------------------------------------------
-        # Verify whether this placeholder still exists.
-        # ------------------------------------------------------
+    # ==========================================================
+    # FIX BILL TABLE LAYOUT
+    # ==========================================================
 
-        remaining = "".join(
-            node["text"]
-            for node in nodes
+    def _fix_bill_table_layout(self, xml_bytes):
+        """
+        Find the table containing the bill placeholders and add:
+
+            <w:tblLayout w:type="fixed"/>
+
+        to that table's tblPr.
+
+        This prevents the document converter from automatically
+        recalculating the table's column widths after values are
+        inserted.
+
+        No rows, cells, widths, drawings or text boxes are rebuilt.
+        """
+
+        if not any(
+            marker in xml_bytes
+            for marker in self.BILL_PLACEHOLDER_MARKERS
+        ):
+            return xml_bytes
+
+        tables = list(
+            self.TBL_PATTERN.finditer(
+                xml_bytes
+            )
         )
 
-        if placeholder in remaining:
+        if not tables:
+            return xml_bytes
 
-            self.missing_placeholders.add(
-                placeholder
+        output = bytearray()
+
+        previous_end = 0
+
+        for table_match in tables:
+
+            table_bytes = table_match.group(0)
+
+            # --------------------------------------------------
+            # Only target the table containing bill placeholders.
+            # --------------------------------------------------
+
+            contains_bill_placeholder = any(
+                marker in table_bytes
+                for marker in self.BILL_PLACEHOLDER_MARKERS
             )
+
+            if not contains_bill_placeholder:
+
+                continue
+
+            # --------------------------------------------------
+            # Already fixed?
+            # --------------------------------------------------
+
+            if self.TBL_LAYOUT_PATTERN.search(
+                table_bytes
+            ):
+
+                continue
+
+            # --------------------------------------------------
+            # Find tblPr.
+            # --------------------------------------------------
+
+            tbl_pr_match = self.TBL_PR_PATTERN.search(
+                table_bytes
+            )
+
+            if not tbl_pr_match:
+                continue
+
+            insert_position = (
+                tbl_pr_match.end()
+            )
+
+            fixed_layout = (
+                b'<w:tblLayout w:type="fixed"/>'
+            )
+
+            new_table = (
+                table_bytes[
+                    :insert_position
+                ]
+                +
+                fixed_layout
+                +
+                table_bytes[
+                    insert_position:
+                ]
+            )
+
+            # --------------------------------------------------
+            # Copy original XML before this table.
+            # --------------------------------------------------
+
+            output.extend(
+                xml_bytes[
+                    previous_end:
+                    table_match.start()
+                ]
+            )
+
+            output.extend(
+                new_table
+            )
+
+            previous_end = table_match.end()
+
+        # ------------------------------------------------------
+        # If nothing was changed, return original bytes.
+        # ------------------------------------------------------
+
+        if not output:
+
+            return xml_bytes
+
+        output.extend(
+            xml_bytes[
+                previous_end:
+            ]
+        )
+
+        return bytes(output)
 
     # ==========================================================
     # XML ESCAPING
