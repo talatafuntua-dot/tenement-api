@@ -1,432 +1,545 @@
-
-Python is reading those as code, causing:
-
-`IndentationError: expected an indented block after class definition`
-
-Also, I want to correct the implementation before you test again: the previous version was unnecessarily complicated and its run-preservation logic was not robust enough for a Word template.
-
-**Do not test Swagger yet. Replace the file with this clean version.** There are **no Markdown backticks inside the file**.
-
-:::writing{variant="document" id="58321" title="Corrected app/template_engine.py"}
-# -*- coding: utf-8 -*-
-
-"""
-template_engine.py
-
-Word template rendering engine.
-
-Replaces placeholders while preserving the existing
-Word paragraph and run formatting.
-
-Supports:
-- Normal paragraphs
-- Tables
-- Nested tables
-- Headers
-- Footers
-- Unresolved placeholder detection
-- Preventing table rows from splitting
-"""
-
+from pathlib import Path
+import html
 import re
-
-from docx import Document
-from docx.oxml import OxmlElement
-
-
-PLACEHOLDER_PATTERN = re.compile(r"\{\{(.*?)\}\}")
+import zipfile
 
 
 class TemplateEngine:
+    """
+    Surgical DOCX template renderer.
+
+    IMPORTANT:
+    This renderer deliberately does NOT use python-docx or lxml.
+
+    It preserves the original DOCX XML structure and changes only
+    the text contained inside <w:t> elements.
+
+    This is important for templates containing floating text boxes,
+    drawings, images, signatures, and positioned shapes.
+    """
+
+    TEXT_TAG_PATTERN = re.compile(
+        rb"(<w:t(?:\s[^>]*)?>)(.*?)(</w:t>)",
+        re.DOTALL,
+    )
+
+    PLACEHOLDER_PATTERN = re.compile(
+        r"\{\{[^{}]+\}\}"
+    )
 
     def __init__(self):
         self.missing_placeholders = set()
 
-    # =========================================================
-    # PUBLIC API
-    # =========================================================
+    # ==========================================================
+    # PUBLIC METHOD
+    # ==========================================================
 
     def render(self, template_path, output_path, data):
+        """
+        Render a DOCX template.
+
+        Existing integration:
+
+            TemplateEngine().render(
+                template_path,
+                output_path,
+                data
+            )
+
+        Returns:
+            sorted list of missing placeholders
+        """
 
         self.missing_placeholders = set()
 
-        doc = Document(template_path)
+        template_path = Path(template_path)
+        output_path = Path(output_path)
 
-        self._process_document(
-            doc,
-            data
+        if not template_path.is_file():
+            raise FileNotFoundError(
+                f"Template file not found: {template_path}"
+            )
+
+        output_path.parent.mkdir(
+            parents=True,
+            exist_ok=True
         )
 
-        doc.save(output_path)
+        replacements = self._build_replacements(data)
+
+        with zipfile.ZipFile(
+            template_path,
+            "r"
+        ) as source_zip:
+
+            with zipfile.ZipFile(
+                output_path,
+                "w",
+                compression=zipfile.ZIP_DEFLATED
+            ) as destination_zip:
+
+                for item in source_zip.infolist():
+
+                    content = source_zip.read(
+                        item.filename
+                    )
+
+                    # Only process Word XML.
+                    #
+                    # Do NOT touch:
+                    # - images
+                    # - relationships
+                    # - settings
+                    # - styles
+                    # - numbering
+                    # - document properties
+                    # - media
+                    # - embedded objects
+                    #
+                    if self._is_word_xml(item.filename):
+
+                        content = self._replace_in_xml(
+                            content,
+                            replacements
+                        )
+
+                    destination_zip.writestr(
+                        item,
+                        content
+                    )
 
         return sorted(
             self.missing_placeholders
         )
 
-    # =========================================================
-    # DOCUMENT
-    # =========================================================
+    # ==========================================================
+    # BUILD REPLACEMENTS
+    # ==========================================================
 
-    def _process_document(self, doc, data):
+    def _build_replacements(self, data):
 
-        for paragraph in doc.paragraphs:
+        if data is None:
+            data = {}
 
-            self._replace_paragraph(
-                paragraph,
-                data
-            )
+        replacements = {}
 
-        for table in doc.tables:
+        for key, value in data.items():
 
-            self._process_table(
-                table,
-                data
-            )
+            if key is None:
+                continue
 
-        for section in doc.sections:
+            key = str(key).strip()
 
-            for paragraph in section.header.paragraphs:
+            if not key:
+                continue
 
-                self._replace_paragraph(
-                    paragraph,
-                    data
-                )
+            # --------------------------------------------------
+            # Accept:
+            #
+            # LG_CODE
+            # {{LG_CODE}}
+            # --------------------------------------------------
 
-            for table in section.header.tables:
+            if (
+                key.startswith("{{")
+                and
+                key.endswith("}}")
+            ):
+                placeholder = key
+            else:
+                placeholder = "{{" + key + "}}"
 
-                self._process_table(
-                    table,
-                    data
-                )
+            if value is None:
+                value = ""
 
-            for paragraph in section.footer.paragraphs:
+            replacements[
+                placeholder
+            ] = self._format_value(value)
 
-                self._replace_paragraph(
-                    paragraph,
-                    data
-                )
+        return replacements
 
-            for table in section.footer.tables:
+    # ==========================================================
+    # VALUE FORMATTER
+    # ==========================================================
 
-                self._process_table(
-                    table,
-                    data
-                )
+    def _format_value(self, value):
 
-    # =========================================================
-    # TABLE PROCESSING
-    # =========================================================
+        if value is None:
+            return ""
 
-    def _process_table(self, table, data):
+        # Preserve ordinary strings exactly.
+        if isinstance(value, str):
+            return value
 
-        for row in table.rows:
-
-            self._prevent_row_split(row)
-
-            for cell in row.cells:
-
-                for paragraph in cell.paragraphs:
-
-                    self._replace_paragraph(
-                        paragraph,
-                        data
-                    )
-
-                for nested_table in cell.tables:
-
-                    self._process_table(
-                        nested_table,
-                        data
-                    )
-
-    # =========================================================
-    # PREVENT TABLE ROW SPLITTING
-    # =========================================================
-
-    def _prevent_row_split(self, row):
-
-        tr_pr = row._tr.get_or_add_trPr()
-
-        namespace = (
-            "{http://schemas.openxmlformats.org/"
-            "wordprocessingml/2006/main}"
-        )
-
-        existing = tr_pr.findall(
-            f"{namespace}cantSplit"
-        )
-
-        for element in existing:
-
-            tr_pr.remove(element)
-
-        cant_split = OxmlElement(
-            "w:cantSplit"
-        )
-
-        tr_pr.append(
-            cant_split
-        )
-
-    # =========================================================
-    # REPLACE PARAGRAPH
-    # =========================================================
-
-    def _replace_paragraph(self, paragraph, data):
-
-        runs = list(
-            paragraph.runs
-        )
-
-        if not runs:
-            return
-
-        # -----------------------------------------------------
-        # Get complete paragraph text.
+        # Excel numeric values.
         #
-        # A Word placeholder may be contained in one run or
-        # split across several runs.
-        # -----------------------------------------------------
+        # Avoid displaying:
+        # 60000.0
+        #
+        # when the value is effectively an integer.
+        if isinstance(value, float):
 
-        full_text = "".join(
-            run.text or ""
-            for run in runs
-        )
+            if value.is_integer():
+                return str(
+                    int(value)
+                )
 
-        if not full_text:
-            return
+        return str(value)
+
+    # ==========================================================
+    # WORD XML DETECTION
+    # ==========================================================
+
+    def _is_word_xml(self, filename):
+
+        if not filename.startswith("word/"):
+            return False
+
+        if not filename.endswith(".xml"):
+            return False
+
+        return True
+
+    # ==========================================================
+    # XML PROCESSING
+    # ==========================================================
+
+    def _replace_in_xml(
+        self,
+        xml_bytes,
+        replacements
+    ):
+        """
+        Replace placeholders without rebuilding the XML tree.
+
+        Only the contents of <w:t> elements are changed.
+        All XML structure, attributes, shapes, tables, drawings,
+        positioning information and other document content remain
+        untouched.
+        """
 
         matches = list(
-            PLACEHOLDER_PATTERN.finditer(
-                full_text
+            self.TEXT_TAG_PATTERN.finditer(
+                xml_bytes
             )
         )
 
         if not matches:
-            return
+            return xml_bytes
 
-        # -----------------------------------------------------
-        # Build replacement list.
-        # -----------------------------------------------------
+        # ------------------------------------------------------
+        # Extract the original text-node contents.
+        # ------------------------------------------------------
 
-        replacements = []
+        nodes = []
 
         for match in matches:
 
-            placeholder = match.group(0)
+            raw_text = match.group(2)
 
-            key = (
-                match.group(1)
-                .strip()
-                .upper()
-            )
-
-            if key in data:
-
-                value = data.get(
-                    key,
-                    ""
+            try:
+                text = raw_text.decode(
+                    "utf-8"
+                )
+            except UnicodeDecodeError:
+                text = raw_text.decode(
+                    "utf-8",
+                    errors="replace"
                 )
 
-                if value is None:
-                    value = ""
+            nodes.append(
+                {
+                    "text": text,
+                    "start": match.start(2),
+                    "end": match.end(2),
+                }
+            )
 
-                replacements.append(
+        # ------------------------------------------------------
+        # Process every placeholder.
+        # ------------------------------------------------------
+
+        for placeholder, replacement in replacements.items():
+
+            self._replace_placeholder_across_nodes(
+                nodes,
+                placeholder,
+                replacement
+            )
+
+        # ------------------------------------------------------
+        # Reconstruct the ORIGINAL XML bytes.
+        #
+        # Only w:t contents are replaced.
+        # Everything between those text nodes is copied directly
+        # from the original XML.
+        # ------------------------------------------------------
+
+        output = bytearray()
+
+        previous_end = 0
+
+        for index, match in enumerate(matches):
+
+            node = nodes[index]
+
+            # Original XML before this text body.
+            output.extend(
+                xml_bytes[
+                    previous_end:
+                    match.start(2)
+                ]
+            )
+
+            new_text = self._xml_escape(
+                node["text"]
+            )
+
+            output.extend(
+                new_text.encode(
+                    "utf-8"
+                )
+            )
+
+            previous_end = match.end(2)
+
+        # Remaining original XML.
+        output.extend(
+            xml_bytes[
+                previous_end:
+            ]
+        )
+
+        return bytes(output)
+
+    # ==========================================================
+    # PLACEHOLDER REPLACEMENT
+    # ==========================================================
+
+    def _replace_placeholder_across_nodes(
+        self,
+        nodes,
+        placeholder,
+        replacement
+    ):
+        """
+        Replace a placeholder even when Word has split it across
+        multiple runs/text nodes.
+
+        Example:
+
+            <w:t>{{LG_</w:t>
+            <w:t>CODE}}</w:t>
+
+        becomes:
+
+            <w:t>GUS-12345678</w:t>
+            <w:t></w:t>
+
+        The surrounding XML remains untouched.
+        """
+
+        if not placeholder:
+            return
+
+        # ------------------------------------------------------
+        # We may need to replace the same placeholder more than
+        # once in the document.
+        # ------------------------------------------------------
+
+        search_start = 0
+
+        while search_start < len(nodes):
+
+            combined = ""
+            mapping = []
+
+            found = False
+
+            # --------------------------------------------------
+            # Build text progressively from the current node.
+            # --------------------------------------------------
+
+            for index in range(
+                search_start,
+                len(nodes)
+            ):
+
+                text = nodes[index]["text"]
+
+                start_position = len(combined)
+
+                combined += text
+
+                end_position = len(combined)
+
+                mapping.append(
                     (
-                        match.start(),
-                        match.end(),
-                        str(value)
+                        index,
+                        start_position,
+                        end_position
                     )
+                )
+
+                if placeholder in combined:
+
+                    found = True
+                    break
+
+                # Prevent unlimited accumulation where possible.
+                #
+                # A placeholder is short, so once the accumulated
+                # text becomes large and the placeholder cannot
+                # possibly cross the boundary, we can still
+                # continue normally.
+                #
+                # No structural document changes occur here.
+
+            if not found:
+                break
+
+            placeholder_start = combined.find(
+                placeholder
+            )
+
+            placeholder_end = (
+                placeholder_start
+                +
+                len(placeholder)
+            )
+
+            # --------------------------------------------------
+            # Identify the text nodes containing the placeholder.
+            # --------------------------------------------------
+
+            affected = []
+
+            for index, start, end in mapping:
+
+                if (
+                    end > placeholder_start
+                    and
+                    start < placeholder_end
+                ):
+
+                    affected.append(
+                        (
+                            index,
+                            start,
+                            end
+                        )
+                    )
+
+            if not affected:
+                break
+
+            first_index = affected[0][0]
+            last_index = affected[-1][0]
+
+            first_node = nodes[first_index]
+            last_node = nodes[last_index]
+
+            first_node_start = affected[0][1]
+            last_node_end = affected[-1][2]
+
+            # --------------------------------------------------
+            # Prefix before placeholder.
+            # --------------------------------------------------
+
+            prefix_length = (
+                placeholder_start
+                -
+                first_node_start
+            )
+
+            prefix = first_node["text"][
+                :prefix_length
+            ]
+
+            # --------------------------------------------------
+            # Suffix after placeholder.
+            # --------------------------------------------------
+
+            suffix_length = (
+                last_node_end
+                -
+                placeholder_end
+            )
+
+            if suffix_length > 0:
+
+                suffix = last_node["text"][
+                    -suffix_length:
+                ]
+
+            else:
+
+                suffix = ""
+
+            # --------------------------------------------------
+            # Replacement.
+            # --------------------------------------------------
+
+            if first_index == last_index:
+
+                first_node["text"] = (
+                    prefix
+                    +
+                    replacement
+                    +
+                    suffix
                 )
 
             else:
 
-                self.missing_placeholders.add(
-                    key
+                first_node["text"] = (
+                    prefix
+                    +
+                    replacement
                 )
 
-        # -----------------------------------------------------
-        # Nothing to replace.
-        # -----------------------------------------------------
+                # Empty the nodes between first and last.
+                for index in range(
+                    first_index + 1,
+                    last_index
+                ):
+                    nodes[index]["text"] = ""
 
-        if not replacements:
-            return
+                # Preserve the suffix in the final node.
+                nodes[last_index]["text"] = suffix
 
-        # -----------------------------------------------------
-        # Produce final text.
-        # -----------------------------------------------------
+            # --------------------------------------------------
+            # This placeholder has now been replaced.
+            # Continue searching after the first affected node.
+            # --------------------------------------------------
 
-        final_text = full_text
+            search_start = first_index + 1
 
-        for start, end, replacement in reversed(
-            replacements
-        ):
+        # ------------------------------------------------------
+        # Verify whether this placeholder still exists.
+        # ------------------------------------------------------
 
-            final_text = (
-                final_text[:start]
-                + replacement
-                + final_text[end:]
-            )
-
-        # -----------------------------------------------------
-        # IMPORTANT:
-        #
-        # Do NOT delete paragraph runs.
-        #
-        # We retain the existing run XML and therefore retain
-        # the original Word formatting.
-        # -----------------------------------------------------
-
-        self._write_preserving_runs(
-            runs,
-            final_text
+        remaining = "".join(
+            node["text"]
+            for node in nodes
         )
 
-    # =========================================================
-    # WRITE TEXT WHILE PRESERVING RUNS
-    # =========================================================
+        if placeholder in remaining:
 
-    def _write_preserving_runs(
-        self,
-        runs,
-        text
-    ):
-
-        if not runs:
-            return
-
-        # -----------------------------------------------------
-        # The safest case is a single run.
-        # -----------------------------------------------------
-
-        if len(runs) == 1:
-
-            runs[0].text = text
-
-            return
-
-        # -----------------------------------------------------
-        # Keep the original run boundaries as much as possible.
-        #
-        # The formatting XML of each run remains untouched.
-        # Only the text is changed.
-        # -----------------------------------------------------
-
-        original_lengths = [
-            len(run.text or "")
-            for run in runs
-        ]
-
-        remaining = text
-
-        for index, run in enumerate(runs):
-
-            # -------------------------------------------------
-            # Last run receives everything remaining.
-            # -------------------------------------------------
-
-            if index == len(runs) - 1:
-
-                run.text = remaining
-
-                break
-
-            original_length = (
-                original_lengths[index]
+            self.missing_placeholders.add(
+                placeholder
             )
 
-            # -------------------------------------------------
-            # Empty original run.
-            # -------------------------------------------------
+    # ==========================================================
+    # XML ESCAPING
+    # ==========================================================
 
-            if original_length == 0:
+    def _xml_escape(self, value):
 
-                run.text = ""
+        if value is None:
+            return ""
 
-                continue
-
-            # -------------------------------------------------
-            # Keep approximately the original amount of text
-            # in this run.
-            # -------------------------------------------------
-
-            amount = min(
-                original_length,
-                len(remaining)
-            )
-
-            run.text = (
-                remaining[:amount]
-            )
-
-            remaining = (
-                remaining[amount:]
-            )
-
-    # =========================================================
-    # DIRECT MULTI-RUN REPLACEMENT
-    # =========================================================
-
-    def _replace_text_in_runs(
-        self,
-        paragraph,
-        old_text,
-        new_text
-    ):
-
-        runs = list(
-            paragraph.runs
+        return html.escape(
+            str(value),
+            quote=False
         )
-
-        if not runs:
-            return False
-
-        combined = "".join(
-            run.text or ""
-            for run in runs
-        )
-
-        if old_text not in combined:
-
-            return False
-
-        updated = combined.replace(
-            old_text,
-            new_text,
-            1
-        )
-
-        self._write_preserving_runs(
-            runs,
-            updated
-        )
-
-        return True
-:::
-
-### Now do exactly this
-
-1. Open `app/template_engine.py`.
-2. **Select everything** in that file.
-3. Delete it.
-4. Paste the complete file above.
-5. Save it.
-6. Push/commit it to GitHub.
-7. Let Render redeploy.
-8. Check the Render deployment log.
-
-The important thing is that the deployment log must **not** contain:
-
-`IndentationError`
-
-Once you see:
-
-`Application startup complete`
-
-and:
-
-`Uvicorn running on http://0.0.0.0:10000`
-
-then **stop there and tell me "started"**.
-
-We will then run the Swagger test.
