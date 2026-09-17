@@ -77,6 +77,12 @@ class Property(Base):
         nullable=False
     )
 
+    lg_code = Column(
+        String(50),
+        unique=True,
+        nullable=True,
+        index=True
+    )
 
 class NoticeTemplate(Base):
     __tablename__ = "notice_templates"
