@@ -172,7 +172,7 @@ async def generate_notice(
         )
 
         property_record.lg_code = (
-            f"TEST-{random_part}"
+            f"GUS-{random_part}"
         )
 
         db.commit()
