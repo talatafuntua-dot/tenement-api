@@ -184,7 +184,7 @@ def generate_notice_pdf(
 
     defaults = {
 
-        "LG_CODE": "TEST-LG-001",
+        "LG_CODE": getattr(property_record, "lg_code", ""),
 
         "RATE_2": "",
         "RATE_3": "",

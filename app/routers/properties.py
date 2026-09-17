@@ -158,6 +158,26 @@ async def generate_notice(
             detail="Property not found"
         )
 
+            # -----------------------------------------------------
+    # Generate LG Code if missing
+    # -----------------------------------------------------
+
+    if not property_record.lg_code:
+
+        alphabet = string.ascii_uppercase + string.digits
+
+        random_part = "".join(
+            secrets.choice(alphabet)
+            for _ in range(8)
+        )
+
+        property_record.lg_code = (
+            f"TEST-{random_part}"
+        )
+
+        db.commit()
+        db.refresh(property_record)
+
     # -----------------------------------------------------
     # Template selection
     # -----------------------------------------------------
