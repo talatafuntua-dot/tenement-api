@@ -4,12 +4,45 @@ from sqlalchemy import (
     String,
     Text,
     Numeric,
-    DateTime
+    DateTime,
+    ForeignKey
 )
 
 from sqlalchemy.sql import func
 
 from app.database import Base
+
+
+class LocalGovernment(Base):
+    __tablename__ = "local_governments"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    name = Column(
+        String(100),
+        unique=True,
+        nullable=False
+    )
+
+    code = Column(
+        String(20),
+        nullable=True
+    )
+
+    prefix = Column(
+        String(10),
+        nullable=False
+    )
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False
+    )
 
 
 class Property(Base):
@@ -64,6 +97,26 @@ class Property(Base):
         nullable=False
     )
 
+    lg_code = Column(
+        String(50),
+        unique=True,
+        nullable=True,
+        index=True
+    )
+
+    lg_id = Column(
+        Integer,
+        ForeignKey("local_governments.id"),
+        nullable=True,
+        index=True
+    )
+
+    lg_prefix = Column(
+        String(10),
+        nullable=True,
+        index=True
+    )
+
     created_at = Column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -77,12 +130,6 @@ class Property(Base):
         nullable=False
     )
 
-    lg_code = Column(
-        String(50),
-        unique=True,
-        nullable=True,
-        index=True
-    )
 
 class NoticeTemplate(Base):
     __tablename__ = "notice_templates"
