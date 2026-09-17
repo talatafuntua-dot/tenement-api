@@ -184,7 +184,7 @@ def generate_notice_pdf(
 
     defaults = {
 
-        "LG_CODE": "",
+        "LG_CODE": "TEST-LG-001",
 
         "RATE_2": "",
         "RATE_3": "",
