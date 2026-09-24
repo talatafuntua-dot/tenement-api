@@ -536,9 +536,11 @@ def export_records(
     # materializing a very large result set at once.
     # -----------------------------------------------------
 
-    for record in query.yield_per(1000):
+    records = query.all()
 
-        worksheet.append(
+for record in records:
+
+    worksheet.append(
             [
                 record.id,
                 record.property_no,
