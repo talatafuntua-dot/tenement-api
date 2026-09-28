@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from fastapi import APIRouter
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 
 router = APIRouter()
@@ -9,6 +9,10 @@ router = APIRouter()
 BASE_DIR = Path(__file__).resolve().parents[2]
 OUTPUT_FOLDER = BASE_DIR / "output_pdfs"
 
+
+# =====================================================
+# DOWNLOAD PDF
+# =====================================================
 
 @router.get("/download/{filename}")
 def download_pdf(filename: str):
@@ -32,23 +36,39 @@ def download_pdf(filename: str):
 
     if not file_path.is_file():
         return {"error": "File not found"}
+
+    return FileResponse(
+        path=str(file_path),
+        media_type="application/pdf",
+        filename=filename
+    )
+
+
+# =====================================================
+# PRINT / VIEW PDF INLINE
+# =====================================================
+
 @router.get("/print/{filename}")
 def print_pdf(filename: str):
 
     file_path = OUTPUT_FOLDER / filename
 
+    print("=== PDF PRINT DEBUG ===")
+    print("REQUESTED:", filename)
+    print("LOOKING FOR:", file_path)
+    print("FILE EXISTS:", file_path.is_file())
+
     if not file_path.is_file():
         return {"error": "File not found"}
 
-    return FileResponse(
-        path=str(file_path),
+    file_handle = open(file_path, "rb")
+
+    return StreamingResponse(
+        file_handle,
         media_type="application/pdf",
         headers={
-            "Content-Disposition": f'inline; filename="{filename}"'
+            "Content-Disposition":
+                f'inline; filename="{filename}"',
+            "Cache-Control": "no-store"
         }
-    )
-    return FileResponse(
-        path=str(file_path),
-        media_type="application/pdf",
-        filename=filename
     )
