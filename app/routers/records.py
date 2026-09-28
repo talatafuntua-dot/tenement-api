@@ -540,7 +540,7 @@ def export_records(
 
     for record in records:
 
-    worksheet.append(
+           worksheet.append(
             [
                 record.id,
                 record.property_no,
