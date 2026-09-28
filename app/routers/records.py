@@ -538,7 +538,7 @@ def export_records(
 
     records = query.all()
 
-for record in records:
+    for record in records:
 
     worksheet.append(
             [
