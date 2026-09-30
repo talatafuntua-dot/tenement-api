@@ -3,19 +3,42 @@
 formatter.py
 Handles all number and currency formatting.
 """
+
 from app.config import CURRENCY_FIELDS, CURRENCY_SYMBOL
 
 
+# =========================================================
+# CLEAN KEY
+# =========================================================
+
 def clean_key(key):
     """
-    Convert Excel column names into standard placeholder keys.
+    Convert Excel/database column names into standard
+    placeholder keys.
 
-    Example:
-        Rate 1  -> RATE_1
-        rate_1  -> RATE_1
+    Examples:
+
+        Rate 1
+        -> RATE_1
+
+        rate_1
+        -> RATE_1
+
+        Owner Name
+        -> OWNER_NAME
     """
-    return str(key).strip().replace(" ", "_").upper()
 
+    return (
+        str(key)
+        .strip()
+        .replace(" ", "_")
+        .upper()
+    )
+
+
+# =========================================================
+# SAFE NUMBER
+# =========================================================
 
 def safe_number(value):
     """
@@ -30,7 +53,13 @@ def safe_number(value):
     try:
 
         if isinstance(value, str):
-            value = value.replace(",", "").replace(CURRENCY_SYMBOL, "").strip()
+
+            value = (
+                value
+                .replace(",", "")
+                .replace(CURRENCY_SYMBOL, "")
+                .strip()
+            )
 
         if value == "":
             return None
@@ -48,24 +77,25 @@ def safe_number(value):
         return float(value)
 
     except Exception:
+
         return None
 
+
+# =========================================================
+# FORMAT NUMBER
+# =========================================================
 
 def format_number(value, decimals=2):
     """
     Format ordinary numbers.
 
-    Examples
+    Examples:
 
         1000
-        ->
-
-        1,000
+        -> 1,000
 
         1234.5
-        ->
-
-        1,234.50
+        -> 1,234.50
     """
 
     num = safe_number(value)
@@ -79,17 +109,18 @@ def format_number(value, decimals=2):
     return f"{num:,.{decimals}f}"
 
 
+# =========================================================
+# FORMAT CURRENCY
+# =========================================================
+
 def format_currency(value, decimals=2):
     """
     Format currency.
 
-    Example
+    Example:
 
         2500
-
-        becomes
-
-        ₦2,500.00
+        -> ₦2,500.00
     """
 
     num = safe_number(value)
@@ -97,8 +128,15 @@ def format_currency(value, decimals=2):
     if num is None:
         num = 0
 
-    return f"{CURRENCY_SYMBOL}{num:,.{decimals}f}"
+    return (
+        f"{CURRENCY_SYMBOL}"
+        f"{num:,.{decimals}f}"
+    )
 
+
+# =========================================================
+# FORMAT VALUE
+# =========================================================
 
 def format_value(key, value):
     """
@@ -108,36 +146,85 @@ def format_value(key, value):
     key = clean_key(key)
 
     if key in CURRENCY_FIELDS:
-        return format_currency(value)
 
-    return format_number(value) if safe_number(value) is not None else (
-        "" if value is None else str(value)
+        return format_currency(
+            value
+        )
+
+    if safe_number(value) is not None:
+
+        return format_number(
+            value
+        )
+
+    return (
+        ""
+        if value is None
+        else str(value)
     )
 
 
+# =========================================================
+# PREPARE ROW
+# =========================================================
+
 def prepare_row(record):
     """
-    Convert either a Pandas row or a SQLAlchemy object
-    into a dictionary ready for the template.
+    Convert any supported record into a dictionary ready
+    for the DOCX template.
+
+    Supported:
+
+        1. Python dictionary
+        2. Pandas Series / row
+        3. SQLAlchemy model
+        4. SimpleNamespace
+        5. Other normal Python objects
     """
 
     data = {}
 
-    # Pandas row
-    if hasattr(record, "to_dict"):
+    # =====================================================
+    # DICTIONARY
+    # =====================================================
+
+    if isinstance(record, dict):
+
+        items = record.items()
+
+    # =====================================================
+    # PANDAS ROW / SERIES
+    # =====================================================
+
+    elif hasattr(record, "to_dict"):
+
         items = record.to_dict().items()
 
-    # SQLAlchemy model
+    # =====================================================
+    # NORMAL OBJECT / SQLALCHEMY
+    # =====================================================
+
     else:
+
         items = vars(record).items()
+
+    # =====================================================
+    # FORMAT EACH FIELD
+    # =====================================================
 
     for column, value in items:
 
-        if column.startswith("_"):
+        if str(column).startswith("_"):
             continue
 
-        key = clean_key(column)
+        key = clean_key(
+            column
+        )
 
-        data[key] = format_value(key, value)
+        data[key] = format_value(
+            key,
+            value
+        )
 
     return data
+
