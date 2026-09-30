@@ -1,4 +1,3 @@
-```python
 # -*- coding: utf-8 -*-
 
 import shutil
@@ -423,4 +422,4 @@ async def generate_from_excel(
 
             # ------------------------------------------------
             # Individual files live i
-```
+
