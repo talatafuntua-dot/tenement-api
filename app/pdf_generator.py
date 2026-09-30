@@ -1,4 +1,4 @@
-```python
+python
 # -*- coding: utf-8 -*-
 
 import os
@@ -622,4 +622,4 @@ def select_excel_and_generate():
         excel_path=excel_path,
         template_path=template_path,
     )
-```
+
