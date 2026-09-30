@@ -1,248 +1,331 @@
-from pathlib import Path
-import zipfile
+```python
+# -*- coding: utf-8 -*-
+
 import shutil
+import tempfile
+import uuid
+from pathlib import Path
+from zipfile import ZipFile, ZIP_DEFLATED
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import (
+    APIRouter,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+)
+from fastapi.responses import FileResponse
 
-from app.pdf_generator import generate_notice_pdfs_from_excel
+from app.pdf_generator import (
+    OUTPUT_FOLDER,
+    TEMPLATES_FOLDER,
+    generate_notice_pdfs_from_excel,
+)
 
 
-router = APIRouter()
+# ============================================================
+# ROUTER
+# ============================================================
+
+router = APIRouter(
+    prefix="/pdf",
+    tags=["PDF"]
+)
 
 
-# =========================================================
+# ============================================================
 # DIRECTORIES
-# =========================================================
+# ============================================================
 
-BASE_DIR = Path(__file__).resolve().parents[2]
+UPLOAD_FOLDER = OUTPUT_FOLDER / "_uploads"
 
-OUTPUT_FOLDER = BASE_DIR / "output_pdfs"
-UPLOAD_FOLDER = BASE_DIR / "excel_uploads"
+OUTPUT_FOLDER.mkdir(
+    parents=True,
+    exist_ok=True
+)
 
-OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
-UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
+UPLOAD_FOLDER.mkdir(
+    parents=True,
+    exist_ok=True
+)
 
 
-# =========================================================
-# DOWNLOAD PDF OR ZIP
-# =========================================================
+# ============================================================
+# SAFE FILE NAME
+# ============================================================
+
+def safe_filename(filename):
+    """
+    Prevent path traversal and unsafe filenames.
+    """
+
+    if not filename:
+        return "file"
+
+    return Path(filename).name
+
+
+# ============================================================
+# DOWNLOAD SINGLE PDF / ZIP
+# ============================================================
 
 @router.get("/download/{filename}")
-def download_pdf(filename: str):
+def download_file(filename: str):
 
-    print("=== PDF DOWNLOAD DEBUG ===")
+    filename = safe_filename(filename)
 
-    # Prevent path traversal
-    safe_filename = Path(filename).name
+    file_path = OUTPUT_FOLDER / filename
 
-    file_path = OUTPUT_FOLDER / safe_filename
-
-    print("BASE_DIR:", BASE_DIR)
-    print("OUTPUT_FOLDER:", OUTPUT_FOLDER)
-    print("REQUESTED:", filename)
-    print("SAFE FILENAME:", safe_filename)
-    print("LOOKING FOR:", file_path)
-    print("FILE EXISTS:", file_path.is_file())
-
-    if not file_path.is_file():
+    if not file_path.exists():
         raise HTTPException(
             status_code=404,
-            detail="File not found"
+            detail="File not found."
         )
 
-    # ZIP download
-    if file_path.suffix.lower() == ".zip":
-
-        return FileResponse(
-            path=str(file_path),
-            media_type="application/zip",
-            filename=safe_filename
-        )
-
-    # PDF download
     return FileResponse(
         path=str(file_path),
-        media_type="application/pdf",
-        filename=safe_filename
+        filename=filename,
     )
 
 
-# =========================================================
-# PRINT PDF
-# =========================================================
+# ============================================================
+# PRINT / VIEW PDF
+# ============================================================
 
 @router.get("/print/{filename}")
 def print_pdf(filename: str):
 
-    safe_filename = Path(filename).name
+    filename = safe_filename(filename)
 
-    file_path = OUTPUT_FOLDER / safe_filename
+    file_path = OUTPUT_FOLDER / filename
 
-    print("=== PDF PRINT DEBUG ===")
-    print("REQUESTED:", filename)
-    print("SAFE FILENAME:", safe_filename)
-    print("LOOKING FOR:", file_path)
-    print("FILE EXISTS:", file_path.is_file())
-
-    if not file_path.is_file():
+    if not file_path.exists():
         raise HTTPException(
             status_code=404,
-            detail="File not found"
-        )
-
-    if file_path.suffix.lower() != ".pdf":
-        raise HTTPException(
-            status_code=400,
-            detail="Only PDF files can be printed."
-        )
-
-    file_handle = open(file_path, "rb")
-
-    return StreamingResponse(
-        file_handle,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": (
-                f'inline; filename="{safe_filename}"'
-            ),
-            "Cache-Control": "no-store"
-        }
-    )
-
-
-# =========================================================
-# DOWNLOAD BATCH ZIP
-# =========================================================
-
-@router.get("/download-batch/{filename}")
-def download_batch(filename: str):
-
-    safe_filename = Path(filename).name
-
-    file_path = OUTPUT_FOLDER / safe_filename
-
-    print("=== BATCH DOWNLOAD DEBUG ===")
-    print("REQUESTED:", filename)
-    print("LOOKING FOR:", file_path)
-    print("FILE EXISTS:", file_path.is_file())
-
-    if not file_path.is_file():
-        raise HTTPException(
-            status_code=404,
-            detail="Batch ZIP file not found"
-        )
-
-    if file_path.suffix.lower() != ".zip":
-        raise HTTPException(
-            status_code=400,
-            detail="The requested file is not a ZIP file."
+            detail="PDF file not found."
         )
 
     return FileResponse(
         path=str(file_path),
-        media_type="application/zip",
-        filename=safe_filename
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f'inline; filename="{filename}"'
+            )
+        },
     )
 
 
-# =========================================================
-# EXCEL → PDF GENERATION
-# =========================================================
+# ============================================================
+# DOWNLOAD ZIP
+# ============================================================
+
+@router.get("/download-batch/{filename}")
+def download_batch(filename: str):
+
+    filename = safe_filename(filename)
+
+    file_path = OUTPUT_FOLDER / filename
+
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="ZIP file not found."
+        )
+
+    return FileResponse(
+        path=str(file_path),
+        filename=filename,
+        media_type="application/zip",
+    )
+
+
+# ============================================================
+# EXCEL → PDF
+# ============================================================
 
 @router.post("/generate-from-excel")
 async def generate_from_excel(
     file: UploadFile = File(...),
-    template_name: str = Form("template.docx")
+
+    template_name: str = Form(
+        "template.docx"
+    ),
+
+    output_mode: str = Form(
+        "zip"
+    ),
 ):
     """
-    Upload an Excel workbook and generate one PDF
-    for each valid Excel record.
+    Generate PDFs directly from an uploaded Excel file.
 
-    The Excel file is processed directly.
+    output_mode:
 
-    It does NOT need to be imported into Neon.
+        individual
+            Generate separate PDFs.
+
+        zip
+            Generate separate PDFs and place them
+            into one ZIP file.
+
+        merged
+            Generate separate PDFs first, then merge
+            them into one PDF.
     """
 
-    # =====================================================
+    # ========================================================
+    # VALIDATE OUTPUT MODE
+    # ========================================================
+
+    output_mode = str(
+        output_mode or "zip"
+    ).strip().lower()
+
+    allowed_modes = {
+        "individual",
+        "zip",
+        "merged",
+    }
+
+    if output_mode not in allowed_modes:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid output_mode. "
+                "Use: individual, zip, or merged."
+            ),
+        )
+
+    # ========================================================
     # VALIDATE EXCEL FILE
-    # =====================================================
+    # ========================================================
 
-    if not file.filename:
+    original_filename = (
+        file.filename or ""
+    )
+
+    extension = Path(
+        original_filename
+    ).suffix.lower()
+
+    if extension not in {
+        ".xlsx",
+        ".xlsm",
+    }:
         raise HTTPException(
             status_code=400,
-            detail="No Excel file was supplied."
+            detail=(
+                "Please upload an Excel "
+                ".xlsx or .xlsm file."
+            ),
         )
 
-    original_name = Path(file.filename).name
-
-    extension = Path(original_name).suffix.lower()
-
-    if extension not in (".xlsx", ".xlsm"):
-        raise HTTPException(
-            status_code=400,
-            detail="Please upload an Excel .xlsx or .xlsm file."
-        )
-
-    # =====================================================
+    # ========================================================
     # VALIDATE WORD TEMPLATE
-    # =====================================================
+    # ========================================================
 
-    safe_template_name = Path(template_name).name
+    template_name = safe_filename(
+        template_name
+    )
 
-    if not safe_template_name.lower().endswith(".docx"):
+    if not template_name.lower().endswith(
+        ".docx"
+    ):
         raise HTTPException(
             status_code=400,
-            detail="The template must be a .docx Word file."
+            detail=(
+                "The template must be a "
+                ".docx file."
+            ),
         )
 
     template_path = (
-        BASE_DIR
-        / "templates"
-        / safe_template_name
+        TEMPLATES_FOLDER /
+        template_name
     )
 
-    if not template_path.is_file():
+    if not template_path.exists():
         raise HTTPException(
             status_code=404,
             detail=(
                 f"Word template not found: "
-                f"{safe_template_name}"
-            )
+                f"{template_name}"
+            ),
         )
 
-    # =====================================================
-    # SAVE TEMPORARY EXCEL
-    # =====================================================
+    # ========================================================
+    # CREATE UNIQUE BATCH FOLDER
+    # ========================================================
 
-    excel_path = (
-        UPLOAD_FOLDER
-        / original_name
+    batch_id = uuid.uuid4().hex[:12]
+
+    original_stem = Path(
+        original_filename
+    ).stem
+
+    original_stem = (
+        safe_filename(original_stem)
     )
+
+    batch_folder_name = (
+        f"{original_stem}_{batch_id}"
+    )
+
+    batch_folder = (
+        OUTPUT_FOLDER /
+        batch_folder_name
+    )
+
+    batch_folder.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    # ========================================================
+    # TEMPORARY EXCEL FILE
+    # ========================================================
+
+    temporary_excel = None
 
     try:
 
-        with open(excel_path, "wb") as buffer:
-            shutil.copyfileobj(
-                file.file,
-                buffer
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=extension,
+            dir=str(UPLOAD_FOLDER),
+        ) as temp_file:
+
+            temporary_excel = Path(
+                temp_file.name
             )
 
-        print("")
-        print("==========================================")
-        print("EXCEL PDF GENERATION REQUEST")
-        print("==========================================")
-        print("Excel:", excel_path)
-        print("Template:", template_path)
-        print("==========================================")
+            while True:
 
-        # =================================================
-        # GENERATE PDFs
-        # =================================================
+                chunk = await file.read(
+                    1024 * 1024
+                )
 
-        result = generate_notice_pdfs_from_excel(
-            excel_path=str(excel_path),
-            template_path=str(template_path)
+                if not chunk:
+                    break
+
+                temp_file.write(chunk)
+
+        # ====================================================
+        # GENERATE INDIVIDUAL PDF FILES
+        # ====================================================
+
+        result = (
+            generate_notice_pdfs_from_excel(
+                excel_path=str(
+                    temporary_excel
+                ),
+                template_path=str(
+                    template_path
+                ),
+                output_folder=str(
+                    batch_folder
+                ),
+            )
         )
 
         generated = result.get(
@@ -260,42 +343,6 @@ async def generate_from_excel(
             []
         )
 
-        # =================================================
-        # NOTHING GENERATED
-        # =================================================
-
-        if not generated:
-
-            return {
-                "success": False,
-                "message": "No PDF files were generated.",
-                "total_records": result.get(
-                    "total_records",
-                    0
-                ),
-                "generated_count": 0,
-                "failed_count": len(failed),
-                "skipped_count": len(skipped),
-                "generated": [],
-                "failed": failed,
-                "skipped": skipped
-            }
-
-        # =================================================
-        # EXTRACT PDF PATHS
-        #
-        # pdf_generator.py returns:
-        #
-        # {
-        #     "excel_row": ...,
-        #     "lg_code": ...,
-        #     "property_no": ...,
-        #     "owner_name": ...,
-        #     "pdf": "/path/to/file.pdf"
-        # }
-        #
-        # =================================================
-
         generated_pdf_paths = []
 
         for item in generated:
@@ -307,8 +354,7 @@ async def generate_from_excel(
                 )
 
             else:
-                # Safety fallback if an older version
-                # returns plain paths
+
                 pdf_value = item
 
             if not pdf_value:
@@ -323,187 +369,58 @@ async def generate_from_excel(
                     pdf_path
                 )
 
-        # =================================================
-        # VERIFY PDF FILES
-        # =================================================
+        # ====================================================
+        # NOTHING GENERATED
+        # ====================================================
 
         if not generated_pdf_paths:
 
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "The generator reported successful "
-                    "records, but no PDF files were found."
-                )
-            )
-
-        # =================================================
-        # ONE PDF
-        # =================================================
-
-        if len(generated_pdf_paths) == 1:
-
-            pdf_path = generated_pdf_paths[0]
-
-            filename = pdf_path.name
-
             return {
-                "success": True,
-                "mode": "single",
+                "success": False,
+                "mode": output_mode,
                 "message": (
-                    "PDF generated successfully."
+                    "No PDF files were generated."
                 ),
-                "filename": filename,
                 "total_records": result.get(
                     "total_records",
-                    1
+                    0
                 ),
-                "generated_count": len(
-                    generated_pdf_paths
-                ),
+                "generated_count": 0,
                 "failed_count": len(
                     failed
                 ),
                 "skipped_count": len(
                     skipped
                 ),
-                "download_url": (
-                    f"/pdf/download/{filename}"
-                ),
-                "print_url": (
-                    f"/pdf/print/{filename}"
-                ),
                 "generated": generated,
                 "failed": failed,
-                "skipped": skipped
+                "skipped": skipped,
             }
 
-        # =================================================
-        # MULTIPLE PDFs → ZIP
-        # =================================================
+        # ====================================================
+        # MODE 1 — INDIVIDUAL
+        # ====================================================
 
-        zip_name = "tenement_rate_batch.zip"
+        if output_mode == "individual":
 
-        zip_path = (
-            OUTPUT_FOLDER
-            / zip_name
-        )
+            files = []
 
-        # Remove previous ZIP
-        if zip_path.exists():
-            zip_path.unlink()
-
-        # =================================================
-        # CREATE ZIP
-        # =================================================
-
-        with zipfile.ZipFile(
-            zip_path,
-            mode="w",
-            compression=zipfile.ZIP_DEFLATED
-        ) as zip_file:
-
-            for pdf_path in generated_pdf_paths:
-
-                zip_file.write(
-                    pdf_path,
-                    arcname=pdf_path.name
-                )
-
-        # =================================================
-        # VERIFY ZIP
-        # =================================================
-
-        if not zip_path.is_file():
-
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "PDF files were generated, "
-                    "but the ZIP file could not be created."
-                )
-            )
-
-        # =================================================
-        # SUCCESS
-        # =================================================
-
-        return {
-            "success": True,
-            "mode": "batch",
-            "message": (
-                f"{len(generated_pdf_paths)} "
-                "PDF files generated successfully."
-            ),
-            "filename": zip_name,
-            "total_records": result.get(
-                "total_records",
-                len(generated_pdf_paths)
-            ),
-            "generated_count": len(
+            for pdf_path in (
                 generated_pdf_paths
-            ),
-            "failed_count": len(
-                failed
-            ),
-            "skipped_count": len(
-                skipped
-            ),
-            "download_url": (
-                f"/pdf/download-batch/{zip_name}"
-            ),
-            "generated": generated,
-            "failed": failed,
-            "skipped": skipped
-        }
+            ):
 
-    except HTTPException:
-        raise
+                files.append({
+                    "filename": pdf_path.name,
+                    "download_url": (
+                        f"/pdf/download/"
+                        f"{pdf_path.name}"
+                    ),
+                    "print_url": (
+                        f"/pdf/print/"
+                        f"{pdf_path.name}"
+                    ),
+                })
 
-    except Exception as ex:
-
-        print("")
-        print("==========================================")
-        print("EXCEL PDF GENERATION ERROR")
-        print("==========================================")
-        print(str(ex))
-        print("==========================================")
-
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"Excel PDF generation failed: {str(ex)}"
-            )
-        )
-
-    finally:
-
-        # =================================================
-        # DELETE TEMPORARY EXCEL
-        # =================================================
-
-        try:
-
-            if excel_path.exists():
-
-                excel_path.unlink()
-
-                print(
-                    "Temporary Excel deleted:",
-                    excel_path
-                )
-
-        except Exception as cleanup_error:
-
-            print(
-                "Could not delete temporary Excel:",
-                cleanup_error
-            )
-
-        try:
-
-            await file.close()
-
-        except Exception:
-
-            pass
+            # ------------------------------------------------
+            # Individual files live i
+```
