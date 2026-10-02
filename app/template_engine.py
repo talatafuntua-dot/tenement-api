@@ -105,20 +105,24 @@ class TemplateEngine:
                     ):
 
                         # --------------------------------------------------
-                        # 1. Replace placeholders surgically.
+                        # 1. Lock ONLY the bill-information table.
+                        #    Do this BEFORE placeholder replacement because
+                        #    the layout detector needs the original markers.
+                        # --------------------------------------------------
+
+                        content = self._fix_bill_table_layout(
+                            content
+                        )
+
+                        # --------------------------------------------------
+                        # 2. Replace placeholders surgically.
+                        #    Only placeholder text is changed. Existing text
+                        #    in unrelated boxes/text runs is left untouched.
                         # --------------------------------------------------
 
                         content = self._replace_in_xml(
                             content,
                             replacements
-                        )
-
-                        # --------------------------------------------------
-                        # 2. Lock ONLY the bill-information table.
-                        # --------------------------------------------------
-
-                        content = self._fix_bill_table_layout(
-                            content
                         )
 
                     destination_zip.writestr(
@@ -162,7 +166,7 @@ class TemplateEngine:
                     "{{"
                     +
                     key
-                    +
+                    + 
                     "}}"
                 )
 
@@ -507,6 +511,7 @@ class TemplateEngine:
         output = bytearray()
 
         previous_end = 0
+        changed = False
 
         for table_match in tables:
 
@@ -522,7 +527,6 @@ class TemplateEngine:
             )
 
             if not contains_bill_placeholder:
-
                 continue
 
             # --------------------------------------------------
@@ -532,7 +536,6 @@ class TemplateEngine:
             if self.TBL_LAYOUT_PATTERN.search(
                 table_bytes
             ):
-
                 continue
 
             # --------------------------------------------------
@@ -582,13 +585,13 @@ class TemplateEngine:
             )
 
             previous_end = table_match.end()
+            changed = True
 
         # ------------------------------------------------------
-        # If nothing was changed, return original bytes.
+        # Nothing changed.
         # ------------------------------------------------------
 
-        if not output:
-
+        if not changed:
             return xml_bytes
 
         output.extend(
