@@ -7,6 +7,7 @@ from app.routers.data import router as data_router
 from app.routers import templates
 from app.routers import importer
 from app.routers import records
+from app.routers import bulk_generator
 
 
 
@@ -31,6 +32,7 @@ app.include_router(data_router)
 app.include_router(templates.router)
 app.include_router(importer.router)
 app.include_router(records.router)
+app.include_router(bulk_generator.router)
 
 @app.get("/")
 def home():
