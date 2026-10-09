@@ -4,12 +4,12 @@ import shutil
 import tempfile
 import zipfile
 from pathlib import Path
+from typing import Literal
 
 import pandas as pd
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pypdf import PdfWriter
-
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -19,7 +19,7 @@ from app.pdf_generator import generate_notice_pdf
 
 router = APIRouter(
     prefix="/bulk-bills",
-    tags=["Bulk Bill Generation"]
+    tags=["Bulk Bill Generation"],
 )
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -37,7 +37,9 @@ def safe_name(value, fallback):
 async def generate_bulk_bills(
     excel_file: UploadFile = File(...),
     template_id: int = Form(...),
-    output_format: str = Form("individual"),
+    output_format: Literal["individual", "merged", "both"] = Form(
+        "individual"
+    ),
     db: Session = Depends(get_db),
 ):
     if not excel_file.filename or not excel_file.filename.lower().endswith(
@@ -45,13 +47,7 @@ async def generate_bulk_bills(
     ):
         raise HTTPException(
             status_code=400,
-            detail="Upload an Excel workbook (.xlsx or .xls)."
-        )
-
-    if output_format not in ("individual", "merged", "both"):
-        raise HTTPException(
-            status_code=400,
-            detail="output_format must be individual, merged, or both."
+            detail="Upload an Excel workbook (.xlsx or .xls).",
         )
 
     template = (
@@ -68,14 +64,17 @@ async def generate_bulk_bills(
     if not template_path.is_file():
         raise HTTPException(
             status_code=404,
-            detail="The selected Word template file could not be found."
+            detail="The selected Word template file could not be found.",
         )
 
     try:
         contents = await excel_file.read()
 
         if not contents:
-            raise HTTPException(status_code=400, detail="The Excel file is empty.")
+            raise HTTPException(
+                status_code=400,
+                detail="The Excel file is empty.",
+            )
 
         with tempfile.TemporaryDirectory() as temporary:
             temp_dir = Path(temporary)
@@ -87,16 +86,16 @@ async def generate_bulk_bills(
             except Exception as exc:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Unable to read Excel workbook: {exc}"
-                )
+                    detail=f"Unable to read Excel workbook: {exc}",
+                ) from exc
 
             if dataframe.empty:
                 raise HTTPException(
                     status_code=400,
-                    detail="The Excel workbook contains no data rows."
+                    detail="The Excel workbook contains no data rows.",
                 )
 
-            # Normalize column headings for the existing bill renderer.
+            # Normalize headings for the existing bill renderer.
             dataframe.columns = [
                 str(column).strip().replace(" ", "_").upper()
                 for column in dataframe.columns
@@ -113,7 +112,7 @@ async def generate_bulk_bills(
                         detail=(
                             "The workbook needs a PROPERTY_NO, "
                             "ASSESSMENT_NO, or LG_CODE column."
-                        )
+                        ),
                     )
 
             batch_name = next(tempfile._get_candidate_names())
@@ -124,6 +123,7 @@ async def generate_bulk_bills(
             errors = []
 
             try:
+                # Generate each property's bill separately.
                 for index, row in dataframe.iterrows():
                     record = row.where(pd.notna(row), None).to_dict()
 
@@ -133,10 +133,6 @@ async def generate_bulk_bills(
                         or f"row_{index + 2}"
                     ).strip()
 
-                    # The existing generator names its output using the
-                    # assessment/property number. Copy each result immediately
-                    # so duplicate names in the workbook cannot overwrite
-                    # earlier bills in this batch.
                     try:
                         generated_path = Path(
                             generate_notice_pdf(
@@ -158,11 +154,13 @@ async def generate_bulk_bills(
                         individual_files.append(saved_path)
 
                     except Exception as exc:
-                        errors.append({
-                            "row": int(index) + 2,
-                            "property": property_number,
-                            "error": str(exc),
-                        })
+                        errors.append(
+                            {
+                                "row": int(index) + 2,
+                                "property": property_number,
+                                "error": str(exc),
+                            }
+                        )
 
                 if not individual_files:
                     raise HTTPException(
@@ -173,26 +171,32 @@ async def generate_bulk_bills(
                         },
                     )
 
+                # Merge all successfully generated PDFs when requested.
                 merged_path = batch_dir / "merged_bills.pdf"
 
                 if output_format in ("merged", "both"):
                     writer = PdfWriter()
 
-                    for pdf_path in individual_files:
-                        writer.append(str(pdf_path))
+                    try:
+                        for pdf_path in individual_files:
+                            writer.append(str(pdf_path))
 
-                    with merged_path.open("wb") as output:
-                        writer.write(output)
+                        with merged_path.open("wb") as output:
+                            writer.write(output)
+                    finally:
+                        writer.close()
 
-                    writer.close()
-
-                archive_path = BATCH_DIR / f"bulk_bills_{batch_name}.zip"
+                # Package the requested output into a ZIP file.
+                archive_path = (
+                    BATCH_DIR / f"bulk_bills_{batch_name}.zip"
+                )
 
                 with zipfile.ZipFile(
                     archive_path,
                     "w",
                     compression=zipfile.ZIP_DEFLATED,
                 ) as archive:
+
                     if output_format in ("individual", "both"):
                         for pdf_path in individual_files:
                             archive.write(
@@ -207,13 +211,14 @@ async def generate_bulk_bills(
                         )
 
                     if errors:
+                        error_text = "\n".join(
+                            f"Excel row {item['row']} "
+                            f"({item['property']}): {item['error']}"
+                            for item in errors
+                        )
                         archive.writestr(
                             "generation_errors.txt",
-                            "\n".join(
-                                f"Excel row {item['row']} "
-                                f"({item['property']}): {item['error']}"
-                                for item in errors
-                            ),
+                            error_text,
                         )
 
                 return FileResponse(
@@ -228,7 +233,7 @@ async def generate_bulk_bills(
                 raise HTTPException(
                     status_code=500,
                     detail=f"Bulk generation failed: {exc}",
-                )
+                ) from exc
 
     finally:
         await excel_file.close()
