@@ -2,7 +2,7 @@ import os
 
 from pathlib import Path
 
-from app.template_engine_v2 import TemplateEngine
+from app.template_engine import TemplateEngine
 from app.word_converter import WordConverter
 from app.formatter import prepare_row
 
