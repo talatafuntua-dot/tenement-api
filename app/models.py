@@ -167,3 +167,34 @@ class NoticeTemplate(Base):
         server_default=func.now(),
         nullable=False
     )
+
+# ADD THESE IMPORTS to app/models.py (keep all existing imports/classes):
+from sqlalchemy import UniqueConstraint
+
+# ADD THESE TWO CLASSES AFTER your existing NoticeTemplate class.
+# They use the existing Base and Property models.
+
+class JournalField(Base):
+    __tablename__ = "journal_fields"
+
+    id = Column(Integer, primary_key=True, index=True)
+    field_key = Column(String(180), unique=True, nullable=False, index=True)
+    label = Column(String(255), nullable=False, index=True)
+    normalized_label = Column(String(180), nullable=False, index=True)
+    position = Column(Integer, nullable=False, default=0)
+    occurrence = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class JournalValue(Base):
+    __tablename__ = "journal_values"
+    __table_args__ = (
+        UniqueConstraint("property_id", "field_id", name="uq_journal_property_field"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    property_id = Column(Integer, ForeignKey("properties.id", ondelete="CASCADE"), nullable=False, index=True)
+    field_id = Column(Integer, ForeignKey("journal_fields.id", ondelete="CASCADE"), nullable=False, index=True)
+    value_text = Column(Text, nullable=True)
+    value_numeric = Column(Numeric(18, 4), nullable=True)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
