@@ -20,16 +20,11 @@ from app.models import Property, LocalGovernment, JournalField, JournalValue
 router = APIRouter(prefix="/master-journal", tags=["Master Journal"])
 
 ALIASES = {
-    "property_no": {"property_no", "property_number", "property_no.", "property number", "assessment_no", "assessment_number", "assessment number", "property_id"},
-    "lg_code": {"lg_code", "lg code", "local_government_code"},
-    "owner_name": {"owner_name", "owner", "owner name", "occupier", "occupier_name", "occupier name", "ratepayer", "ratepayer_name"},
-    "address": {"address", "property_address", "property address", "location"},
-    "rating_area": {"rating_area", "rating area", "area"},
-    "annual_value": {"annual_value", "annual value", "assessed_value", "assessed value"},
-    "rate_due": {"rate_due", "rate due", "amount_due", "amount due", "current_rate", "current rate"},
-    "year": {"year", "billing_year", "billing year", "rate_year"},
-    "status": {"status", "payment_status", "payment status"},
-    "lg_prefix": {"lg_prefix", "prefix"},
+    "property_no": {"assessment no"},
+    "owner_name": {"name of occupier"},
+    "lg_code": {"lg code"},
+    "address": {"address"},
+    "rating_area": {"rating area"},
 }
 
 
@@ -132,10 +127,25 @@ async def import_journal_excel(
     contents = await file.read()
     try:
         workbook = load_workbook(BytesIO(contents), read_only=True, data_only=True)
-        if sheet_name not in workbook.sheetnames:
-            raise HTTPException(status_code=400, detail="The selected worksheet does not exist in this workbook.")
-        sheet = workbook[sheet_name]
+        
+        selected_sheet = next(
+            (
+                name for name in workbook.sheetnames
+                if name.strip() == sheet_name.strip()
+            ),
+            None,
+        )
+
+        if selected_sheet is None:
+            raise HTTPException(
+                status_code=400,
+                detail="The selected worksheet does not exist in this workbook.",
+            )
+
+        sheet = workbook[selected_sheet]
+
         rows_iter = sheet.iter_rows(values_only=True)
+
         header_row = next(rows_iter, None)
         if not header_row:
             raise HTTPException(status_code=400, detail="The selected worksheet is empty.")
@@ -253,7 +263,6 @@ def build_query(db: Session, search: str | None, filters: dict[str, str], select
     query = db.query(Property)
     if search and search.strip():
         pattern = f"%{search.strip()}%"
-        query = query.filter(or_(Property.property_no.ilike(pattern), Property.lg_code.ilike(pattern), Property.owner_name.ilike(pattern), Property.address.ilike(pattern), Property.rating_area.ilike(pattern)))
         matching_value_property_ids = db.query(JournalValue.property_id).filter(JournalValue.value_text.ilike(pattern)).subquery()
         query = query.filter(or_(
             Property.property_no.ilike(pattern),
