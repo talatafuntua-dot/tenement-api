@@ -287,8 +287,11 @@ def get_journal_fields(db: Session = Depends(get_db)):
     return {"fields": [{"field_key": f.field_key, "label": f.label, "position": f.position, "occurrence": f.occurrence} for f in fields]}
 
 
+
 def build_query(db: Session, search: str | None, filters: dict[str, str], selected_only: bool = False):
-    query = db.query(Property)
+    query = db.query(Property).filter(
+        Property.id.in_(db.query(JournalValue.property_id).distinct())
+    )
     if search and search.strip():
         pattern = f"%{search.strip()}%"
         matching_value_property_ids = db.query(JournalValue.property_id).filter(JournalValue.value_text.ilike(pattern)).subquery()
