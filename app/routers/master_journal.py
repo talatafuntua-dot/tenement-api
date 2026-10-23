@@ -104,6 +104,34 @@ def safe_record(prop: Property) -> dict[str, Any]:
     }
 
 
+def make_json_safe(value: Any) -> Any:
+    """Convert missing and non-finite values to JSON-safe values."""
+    if value is None:
+        return None
+
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+
+    if isinstance(value, Decimal):
+        return float(value) if value.is_finite() else None
+
+    if isinstance(value, dict):
+        return {
+            str(key): make_json_safe(item)
+            for key, item in value.items()
+        }
+
+    if isinstance(value, (list, tuple)):
+        return [make_json_safe(item) for item in value]
+
+    # Handle NumPy scalar values if any enter the response.
+    if type(value).__module__.startswith("numpy") and hasattr(value, "item"):
+        return make_json_safe(value.item())
+
+    return value
+
+
+
 @router.post("/worksheets")
 async def get_worksheets(file: UploadFile = File(...)):
     contents = await file.read()
@@ -326,7 +354,16 @@ def get_journal_records(
         rec = safe_record(prop)
         rec["journal_values"] = dynamic.get(prop.id, {})
         records.append(rec)
-    return jsonable_encoder({"records": records, "total": total, "page": page, "page_size": page_size, "total_pages": math.ceil(total / page_size) if total else 0})
+   
+    response_data = {
+        "records": records,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": math.ceil(total / page_size) if total else 0,
+    }
+
+    return make_json_safe(jsonable_encoder(response_data))
 
 
 @router.post("/bill-selection")
