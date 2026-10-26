@@ -88,34 +88,37 @@ def search_by_owner(
 # Discover Word templates directly from the templates folder
 # =========================================================
 
+
+# =========================================================
+# AVAILABLE TEMPLATES
+# Read template IDs and details from the database.
+# Uses the same registry as bulk bill generation.
+# =========================================================
+
 @router.get("/templates")
 def get_templates(
     db: Session = Depends(get_db)
 ):
-    if not TEMPLATES_FOLDER.is_dir():
-        raise HTTPException(
-            status_code=500,
-            detail=f"Templates folder not found: {TEMPLATES_FOLDER}"
-        )
-
-    files = sorted(
-        TEMPLATES_FOLDER.glob("*.docx"),
-        key=lambda path: path.name.lower()
+    templates = (
+        db.query(NoticeTemplate)
+        .order_by(NoticeTemplate.id.asc())
+        .all()
     )
 
     result = []
 
-    for index, template_path in enumerate(files, start=1):
+    for template in templates:
         result.append({
-            "id": index,
-            "name": template_path.stem,
-            "filename": template_path.name,
-            "description": "Word notice template"
+            "id": template.id,
+            "name": template.name,
+            "filename": template.filename,
+            "description": template.description or ""
         })
 
     return {
         "templates": result
     }
+
 
 # =========================================================
 # GENERATE NOTICE
