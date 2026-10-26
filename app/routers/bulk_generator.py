@@ -60,6 +60,14 @@ async def generate_bulk_bills(
         raise HTTPException(status_code=404, detail="Template not found.")
 
     template_path = Path(template.file_path)
+    print("========== BULK TEMPLATE CHECK ==========")
+print(f"Submitted template ID: {template_id}")
+print(f"Database template ID: {template.id}")
+print(f"Database template name: {getattr(template, 'name', 'N/A')}")
+print(f"Database file path: {template.file_path}")
+print(f"Resolved template path: {template_path.resolve()}")
+print(f"File exists: {template_path.is_file()}")
+print("=========================================")
 
 
     if not template_path.is_file():
