@@ -50,7 +50,7 @@ async def generate_bulk_bills(
             detail="Upload an Excel workbook (.xlsx or .xls).",
         )
 
-    
+    # Retrieve the selected template from the database.
     template = (
         db.query(NoticeTemplate)
         .filter(NoticeTemplate.id == template_id)
@@ -63,23 +63,21 @@ async def generate_bulk_bills(
             detail="Template not found.",
         )
 
+    # Use the original template path handling.
     template_path = Path(template.file_path)
 
-    if not template_path.is_file():
-        raise HTTPException(
-            status_code=404,
-            detail="The selected Word template file could not be found.",
-        )
-
+    # Diagnostic information for Render logs.
     print("========== BULK TEMPLATE CHECK ==========")
-print(f"Submitted template ID: {template_id}")
-print(f"Database template ID: {template.id}")
-print(f"Database template name: {getattr(template, 'name', 'N/A')}")
-print(f"Database file path: {template.file_path}")
-print(f"Resolved template path: {template_path.resolve()}")
-print(f"File exists: {template_path.is_file()}")
-print("=========================================")
-
+    print(f"Submitted template ID: {template_id}")
+    print(f"Database template ID: {template.id}")
+    print(
+        f"Database template name: "
+        f"{getattr(template, 'name', 'N/A')}"
+    )
+    print(f"Database file path: {template.file_path}")
+    print(f"Resolved template path: {template_path.resolve()}")
+    print(f"File exists: {template_path.is_file()}")
+    print("=========================================")
 
     if not template_path.is_file():
         raise HTTPException(
