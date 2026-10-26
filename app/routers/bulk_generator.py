@@ -59,33 +59,7 @@ async def generate_bulk_bills(
     if not template:
         raise HTTPException(status_code=404, detail="Template not found.")
 
-    
-# Resolve the selected Word template on Render.
-# Templates are stored in the repository's app/templates folder.
-stored_path = str(template.file_path or "").replace("\\", "/")
-template_path = Path(stored_path)
-
-if not template_path.is_absolute():
-    template_path = Path.cwd() / template_path
-
-if not template_path.is_file():
-    template_filename = stored_path.split("/")[-1]
-    template_path = (
-        Path(__file__).resolve().parents[1]
-        / "templates"
-        / template_filename
-    )
-
-if not template_path.is_file():
-    raise HTTPException(
-        status_code=404,
-        detail=(
-            "The selected Word template file could not be found. "
-            f"Template record ID: {template.id}; "
-            f"stored path: {template.file_path}; "
-            f"checked path: {template_path}"
-        ),
-    )
+ template_path = Path(template.file_path)
 
 
     if not template_path.is_file():
