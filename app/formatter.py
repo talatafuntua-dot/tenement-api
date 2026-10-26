@@ -79,6 +79,7 @@ FIELD_REGISTRY = {
         "RATEABLE VALUE",
         "RATEABLE ANNUAL VALUE",
         "ASSESSED VALUE",
+        "ESTIMATED",
     ],
     "RATE_DUE": [
         "TENEMENT RATE",
@@ -88,6 +89,7 @@ FIELD_REGISTRY = {
         "CURRENT RATE",
         "CURRENT RATE DUE",
         "RATE AMOUNT",
+        "RATE 1",
     ],
     "YEAR": [
         "ASSESSMENT YEAR",
