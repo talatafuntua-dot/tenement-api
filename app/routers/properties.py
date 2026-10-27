@@ -120,44 +120,47 @@ def get_templates(
     }
 
 
-# =========================================================
-# GENERATE NOTICE
-# =========================================================
-
-@router.post("/generate-notice")
-async def generate_notice(
-    data: dict,
-    db: Session = Depends(get_db)
-):
 
     # -----------------------------------------------------
-    # Property number
+    # Find property by unique Neon ID
+    # Fall back to property number for older requests
     # -----------------------------------------------------
 
-    property_no = data.get(
-        "property_no"
-    )
+    property_id = data.get("property_id")
+    property_no = data.get("property_no")
 
-    if not property_no:
+    property_record = None
 
-        raise HTTPException(
-            status_code=400,
-            detail="Property number is required"
+    if property_id is not None:
+        try:
+            property_id = int(property_id)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail="property_id must be an integer"
+            )
+
+        from app.models import Property
+
+        property_record = (
+            db.query(Property)
+            .filter(Property.id == property_id)
+            .first()
         )
 
-    # -----------------------------------------------------
-    # Find property
-    # -----------------------------------------------------
-
-    property_record = (
-        crud.get_property_by_number(
+    elif property_no:
+        property_record = crud.get_property_by_number(
             db,
             property_no
         )
-    )
+
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Property ID or property number is required"
+        )
 
     if not property_record:
-
         raise HTTPException(
             status_code=404,
             detail="Property not found"
