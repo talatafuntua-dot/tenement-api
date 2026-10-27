@@ -5,7 +5,8 @@ from sqlalchemy import (
     Text,
     Numeric,
     DateTime,
-    ForeignKey
+    ForeignKey,
+    UniqueConstraint
 )
 
 from sqlalchemy.sql import func
@@ -198,3 +199,51 @@ class JournalValue(Base):
     value_text = Column(Text, nullable=True)
     value_numeric = Column(Numeric(18, 4), nullable=True)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+class LGCodeRegistry(Base):
+    __tablename__ = "lg_code_registry"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "property_key",
+            name="uq_lg_code_registry_property_key",
+        ),
+        UniqueConstraint(
+            "lg_code",
+            name="uq_lg_code_registry_lg_code",
+        ),
+    )
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True,
+    )
+
+    property_key = Column(
+        String(255),
+        nullable=False,
+        index=True,
+    )
+
+    property_identifier = Column(
+        String(255),
+        nullable=False,
+    )
+
+    prefix_used = Column(
+        String(50),
+        nullable=True,
+    )
+
+    lg_code = Column(
+        String(50),
+        nullable=False,
+        index=True,
+    )
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
