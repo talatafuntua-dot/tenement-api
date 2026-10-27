@@ -1,19 +1,14 @@
+
 import secrets
 import string
-
-from fastapi import (
-    APIRouter,
-    Depends,
-    HTTPException
-)
-
-from sqlalchemy.orm import Session
-
 from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import crud
-from app.models import NoticeTemplate
+from app.models import NoticeTemplate, Property
 from app.pdf_generator import generate_notice_pdf
 
 
@@ -22,13 +17,7 @@ router = APIRouter(
     tags=["Properties"]
 )
 
-
-# =========================================================
-# DIRECTORIES
-# =========================================================
-
 BASE_DIR = Path(__file__).resolve().parents[2]
-
 TEMPLATES_FOLDER = BASE_DIR / "templates"
 
 
@@ -42,12 +31,7 @@ def get_properties(
     limit: int = 100,
     db: Session = Depends(get_db)
 ):
-
-    return crud.get_all_properties(
-        db,
-        skip,
-        limit
-    )
+    return crud.get_all_properties(db, skip, limit)
 
 
 # =========================================================
@@ -59,11 +43,7 @@ def search_properties(
     query: str,
     db: Session = Depends(get_db)
 ):
-
-    return crud.search_properties(
-        db,
-        query
-    )
+    return crud.search_properties(db, query)
 
 
 # =========================================================
@@ -75,24 +55,11 @@ def search_by_owner(
     owner_name: str,
     db: Session = Depends(get_db)
 ):
-
-    return crud.search_owner(
-        db,
-        owner_name
-    )
-
+    return crud.search_owner(db, owner_name)
 
 
 # =========================================================
 # AVAILABLE TEMPLATES
-# Discover Word templates directly from the templates folder
-# =========================================================
-
-
-# =========================================================
-# AVAILABLE TEMPLATES
-# Read template IDs and details from the database.
-# Uses the same registry as bulk bill generation.
 # =========================================================
 
 @router.get("/templates")
@@ -105,31 +72,59 @@ def get_templates(
         .all()
     )
 
-    result = []
-
-    for template in templates:
-        result.append({
-            "id": template.id,
-            "name": template.name,
-            "filename": template.filename,
-            "description": template.description or ""
-        })
-
     return {
-        "templates": result
+        "templates": [
+            {
+                "id": template.id,
+                "name": template.name,
+                "filename": template.filename,
+                "description": template.description or ""
+            }
+            for template in templates
+        ]
     }
 
 
+# =========================================================
+# GET PROPERTY BY UNIQUE NEON ID
+# =========================================================
 
+@router.get("/by-id/{property_id}")
+def get_property_by_id(
+    property_id: int,
+    db: Session = Depends(get_db)
+):
+    property_record = (
+        db.query(Property)
+        .filter(Property.id == property_id)
+        .first()
+    )
+
+    if not property_record:
+        raise HTTPException(
+            status_code=404,
+            detail="Property not found"
+        )
+
+    return property_record
+
+
+# =========================================================
+# GENERATE NOTICE
+# =========================================================
+
+@router.post("/generate-notice")
+async def generate_notice(
+    data: dict,
+    db: Session = Depends(get_db)
+):
     # -----------------------------------------------------
-    # Find property by unique Neon ID
-    # Fall back to property number for older requests
+    # Find exact property by Neon ID.
+    # Keep property-number fallback for older callers.
     # -----------------------------------------------------
 
     property_id = data.get("property_id")
     property_no = data.get("property_no")
-
-    property_record = None
 
     if property_id is not None:
         try:
@@ -140,20 +135,16 @@ def get_templates(
                 detail="property_id must be an integer"
             )
 
-        from app.models import Property
-
         property_record = (
             db.query(Property)
             .filter(Property.id == property_id)
             .first()
         )
-
     elif property_no:
         property_record = crud.get_property_by_number(
             db,
             property_no
         )
-
     else:
         raise HTTPException(
             status_code=400,
@@ -166,12 +157,11 @@ def get_templates(
             detail="Property not found"
         )
 
-            # -----------------------------------------------------
+    # -----------------------------------------------------
     # Generate LG Code if missing
     # -----------------------------------------------------
 
     if not property_record.lg_code:
-
         alphabet = string.ascii_uppercase + string.digits
 
         random_part = "".join(
@@ -179,9 +169,7 @@ def get_templates(
             for _ in range(8)
         )
 
-        property_record.lg_code = (
-            f"GUS-{random_part}"
-        )
+        property_record.lg_code = f"GUS-{random_part}"
 
         db.commit()
         db.refresh(property_record)
@@ -190,26 +178,13 @@ def get_templates(
     # Template selection
     # -----------------------------------------------------
 
-    template_id = data.get(
-        "template_id"
-    )
-
+    template_id = data.get("template_id")
     template_record = None
 
-    # -----------------------------------------------------
-    # Use database template when template_id supplied
-    # -----------------------------------------------------
-
     if template_id is not None:
-
         try:
-
-            template_id = int(
-                template_id
-            )
-
+            template_id = int(template_id)
         except (TypeError, ValueError):
-
             raise HTTPException(
                 status_code=400,
                 detail="template_id must be an integer"
@@ -217,62 +192,34 @@ def get_templates(
 
         template_record = (
             db.query(NoticeTemplate)
-            .filter(
-                NoticeTemplate.id == template_id
-            )
+            .filter(NoticeTemplate.id == template_id)
             .first()
         )
 
         if not template_record:
-
             raise HTTPException(
                 status_code=404,
                 detail="Template not found"
             )
 
-        # IMPORTANT:
-        # Use the database file path.
-
-        template_path = Path(
-            template_record.file_path
-        )
-
-        template_name = (
-            template_record.filename
-        )
-
-    # -----------------------------------------------------
-    # Backward-compatible filename selection
-    # -----------------------------------------------------
+        template_path = Path(template_record.file_path)
+        template_name = template_record.filename
 
     else:
-
-        template_name = data.get(
-            "template",
-            "template.docx"
-        )
-
         template_name = Path(
-            template_name
+            data.get("template", "template.docx")
         ).name
 
-        template_path = (
-            TEMPLATES_FOLDER /
-            template_name
-        )
+        template_path = TEMPLATES_FOLDER / template_name
 
     # -----------------------------------------------------
     # Verify template exists
     # -----------------------------------------------------
 
     if not template_path.exists():
-
         raise HTTPException(
             status_code=404,
-            detail=(
-                f"Template file not found: "
-                f"{template_path}"
-            )
+            detail=f"Template file not found: {template_path}"
         )
 
     # -----------------------------------------------------
@@ -280,58 +227,37 @@ def get_templates(
     # -----------------------------------------------------
 
     try:
-
         pdf_file = generate_notice_pdf(
             property_record=property_record,
             template_path=template_path
         )
-
     except FileNotFoundError as error:
-
         raise HTTPException(
             status_code=404,
             detail=str(error)
         )
-
     except ValueError as error:
-
         raise HTTPException(
             status_code=400,
             detail=str(error)
         )
-
     except Exception as error:
-
         raise HTTPException(
             status_code=500,
             detail=str(error)
         )
 
-    # -----------------------------------------------------
-    # Response
-    # -----------------------------------------------------
-
     return {
-        "message":
-            "Notice generated successfully",
-
-        "pdf":
-            pdf_file,
-
-        "template":
-            template_name,
-
-        "template_id":
-            template_id
+        "message": "Notice generated successfully",
+        "pdf": pdf_file,
+        "template": template_name,
+        "template_id": template_id
     }
 
 
 # =========================================================
-# GET PROPERTY
-#
-# IMPORTANT:
-# This catch-all route is LAST.
-# It accepts property numbers containing "/".
+# GET PROPERTY BY PROPERTY NUMBER
+# Keep this catch-all route LAST.
 # =========================================================
 
 @router.get("/{property_no:path}")
@@ -339,16 +265,12 @@ def get_property(
     property_no: str,
     db: Session = Depends(get_db)
 ):
-
-    property_record = (
-        crud.get_property_by_number(
-            db,
-            property_no
-        )
+    property_record = crud.get_property_by_number(
+        db,
+        property_no
     )
 
     if not property_record:
-
         raise HTTPException(
             status_code=404,
             detail="Property not found"
