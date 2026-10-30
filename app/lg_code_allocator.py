@@ -1,5 +1,7 @@
 import secrets
 import string
+import uuid
+import re
 
 from sqlalchemy.exc import IntegrityError
 
@@ -147,3 +149,59 @@ def get_or_create_lg_code(db, property_record, prefix=None):
     db.flush()
 
     return lg_code
+
+
+def allocate_bulk_lg_code(db, prefix=None, property_identifier=None):
+    """
+    Atomically allocate and permanently register a unique LG Code
+    for an Excel bulk-generation row, without requiring a Property record.
+    """
+
+    selected_prefix = str(prefix or "LG").strip().upper()
+    selected_prefix = re.sub(r"[^A-Z0-9_-]", "", selected_prefix)
+    selected_prefix = selected_prefix[:41] or "LG"
+
+    identifier = str(
+        property_identifier or "Excel bulk allocation"
+    ).strip()[:255]
+
+    alphabet = string.ascii_uppercase + string.digits
+
+    for attempt in range(20):
+        random_part = "".join(
+            secrets.choice(alphabet) for _ in range(8)
+        )
+
+        lg_code = f"{selected_prefix}-{random_part}"
+
+        # A unique reservation key for this Excel allocation.
+        property_key = f"BULK-{uuid.uuid4().hex}"
+
+        try:
+            # Reserve the code inside a database transaction.
+            with db.begin_nested():
+                registry = LGCodeRegistry(
+                    property_key=property_key,
+                    property_identifier=identifier,
+                    prefix_used=selected_prefix,
+                    lg_code=lg_code,
+                )
+
+                db.add(registry)
+                db.flush()
+
+            # Permanently commit the reservation.
+            db.commit()
+
+            return lg_code
+
+        except IntegrityError:
+            db.rollback()
+            # The code or reservation key collided.
+            # Try another randomly generated code.
+            continue
+
+    raise RuntimeError(
+        "Unable to allocate a unique LG Code after 20 attempts."
+    )
+
