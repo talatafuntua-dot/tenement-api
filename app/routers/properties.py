@@ -167,8 +167,8 @@ async def generate_notice(
        prefix=property_record.lg_prefix
     )
 
-db.commit()
-db.refresh(property_record)
+    db.commit()
+    db.refresh(property_record)
 
     # -----------------------------------------------------
     # Template selection
