@@ -13,8 +13,9 @@ from pypdf import PdfWriter
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import NoticeTemplate
 from app.pdf_generator import generate_notice_pdf
+from app.models import NoticeTemplate
+from app.lg_code_allocator import allocate_bulk_lg_code
 
 
 router = APIRouter(
@@ -122,14 +123,12 @@ async def generate_bulk_bills(
             if "PROPERTY_NO" not in dataframe.columns:
                 if "ASSESSMENT_NO" in dataframe.columns:
                     dataframe["PROPERTY_NO"] = dataframe["ASSESSMENT_NO"]
-                elif "LG_CODE" in dataframe.columns:
-                    dataframe["PROPERTY_NO"] = dataframe["LG_CODE"]
                 else:
                     raise HTTPException(
                         status_code=400,
                         detail=(
-                            "The workbook needs a PROPERTY_NO, "
-                            "ASSESSMENT_NO, or LG_CODE column."
+                            "The workbook needs a PROPERTY_NO "
+                            "or ASSESSMENT_NO column."
                         ),
                     )
 
@@ -142,16 +141,56 @@ async def generate_bulk_bills(
 
             try:
                 # Generate each property's bill separately.
+
+                # Ensure the workbook has an LG_CODE column.
+                if "LG_CODE" not in dataframe.columns:
+                    dataframe["LG_CODE"] = None
+
+                individual_files = []
+                errors = []
+                seen_codes = set()
+
+                # Generate each property's bill separately.
                 for index, row in dataframe.iterrows():
                     record = row.where(pd.notna(row), None).to_dict()
 
                     property_number = str(
                         record.get("PROPERTY_NO")
-                        or record.get("LG_CODE")
+                        or record.get("ASSESSMENT_NO")
                         or f"row_{index + 2}"
                     ).strip()
 
                     try:
+                        prefix = record.get("PREFIX") or "LG"
+
+                        existing_code = str(
+                            record.get("LG_CODE") or ""
+                        ).strip()
+
+                        if existing_code:
+                            lg_code = existing_code
+                        else:
+                            # Allocate directly from Excel.
+                            # No Property lookup in Neon.
+                            lg_code = allocate_bulk_lg_code(
+                                db,
+                                prefix=prefix,
+                                property_identifier=property_number,
+                            )
+
+                            # Save the new code into the workbook.
+                            dataframe.at[index, "LG_CODE"] = lg_code
+
+                        if lg_code in seen_codes:
+                            raise ValueError(
+                                f"Duplicate LG Code in workbook: {lg_code}"
+                            )
+
+                        seen_codes.add(lg_code)
+
+                        record["LG_CODE"] = lg_code
+                        record["PROPERTY_NO"] = property_number
+
                         generated_path = Path(
                             generate_notice_pdf(
                                 property_record=record,
@@ -172,6 +211,8 @@ async def generate_bulk_bills(
                         individual_files.append(saved_path)
 
                     except Exception as exc:
+                        db.rollback()
+
                         errors.append(
                             {
                                 "row": int(index) + 2,
@@ -180,19 +221,21 @@ async def generate_bulk_bills(
                             }
                         )
 
-                if not individual_files:
-                    raise HTTPException(
-                        status_code=500,
-                        detail={
-                            "message": "No bills could be generated.",
-                            "errors": errors,
-                        },
-                    )
+                # Save the updated Excel workbook.
+                updated_workbook_path = (
+                    batch_dir / "bulk_generation_with_lg_codes.xlsx"
+                )
+
+                dataframe.to_excel(
+                    updated_workbook_path,
+                    index=False,
+                )
+
 
                 # Merge all successfully generated PDFs when requested.
                 merged_path = batch_dir / "merged_bills.pdf"
 
-                if output_format in ("merged", "both"):
+               if output_format in ("merged", "both") and individual_files:
                     writer = PdfWriter()
 
                     try:
@@ -209,42 +252,48 @@ async def generate_bulk_bills(
                     BATCH_DIR / f"bulk_bills_{batch_name}.zip"
                 )
 
-                with zipfile.ZipFile(
-                    archive_path,
-                    "w",
-                    compression=zipfile.ZIP_DEFLATED,
-                ) as archive:
+               with zipfile.ZipFile(
+    archive_path,
+    "w",
+    compression=zipfile.ZIP_DEFLATED,
+) as archive:
 
-                    if output_format in ("individual", "both"):
-                        for pdf_path in individual_files:
-                            archive.write(
-                                pdf_path,
-                                arcname=f"individual/{pdf_path.name}",
-                            )
+    if output_format in ("individual", "both"):
+        for pdf_path in individual_files:
+            archive.write(
+                pdf_path,
+                arcname=f"individual/{pdf_path.name}",
+            )
 
-                    if output_format in ("merged", "both"):
-                        archive.write(
-                            merged_path,
-                            arcname="merged_bills.pdf",
-                        )
+    if output_format in ("merged", "both"):
+        archive.write(
+            merged_path,
+            arcname="merged_bills.pdf",
+        )
 
-                    if errors:
-                        error_text = "\n".join(
-                            f"Excel row {item['row']} "
-                            f"({item['property']}): {item['error']}"
-                            for item in errors
-                        )
-                        archive.writestr(
-                            "generation_errors.txt",
-                            error_text,
-                        )
+    # Include the Excel workbook containing allocated LG Codes
+    if updated_workbook_path.exists():
+        archive.write(
+            updated_workbook_path,
+            arcname="bulk_generation_with_lg_codes.xlsx",
+        )
 
-                return FileResponse(
-                    path=str(archive_path),
-                    media_type="application/zip",
-                    filename=archive_path.name,
-                )
+    if errors:
+        error_text = "\n".join(
+            f"Excel row {item['row']} "
+            f"({item['property']}): {item['error']}"
+            for item in errors
+        )
+        archive.writestr(
+            "generation_errors.txt",
+            error_text,
+        )
 
+return FileResponse(
+    path=str(archive_path),
+    media_type="application/zip",
+    filename=archive_path.name,
+)
             except HTTPException:
                 raise
             except Exception as exc:
