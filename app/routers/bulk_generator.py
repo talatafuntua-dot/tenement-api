@@ -140,14 +140,10 @@ async def generate_bulk_bills(
             errors = []
 
             try:
-                # Generate each property's bill separately.
-
                 # Ensure the workbook has an LG_CODE column.
                 if "LG_CODE" not in dataframe.columns:
                     dataframe["LG_CODE"] = None
 
-                individual_files = []
-                errors = []
                 seen_codes = set()
 
                 # Generate each property's bill separately.
@@ -231,11 +227,10 @@ async def generate_bulk_bills(
                     index=False,
                 )
 
-
                 # Merge all successfully generated PDFs when requested.
                 merged_path = batch_dir / "merged_bills.pdf"
 
-               if output_format in ("merged", "both") and individual_files:
+                if output_format in ("merged", "both") and individual_files:
                     writer = PdfWriter()
 
                     try:
@@ -252,50 +247,56 @@ async def generate_bulk_bills(
                     BATCH_DIR / f"bulk_bills_{batch_name}.zip"
                 )
 
-               with zipfile.ZipFile(
-    archive_path,
-    "w",
-    compression=zipfile.ZIP_DEFLATED,
-) as archive:
+                with zipfile.ZipFile(
+                    archive_path,
+                    "w",
+                    compression=zipfile.ZIP_DEFLATED,
+                ) as archive:
 
-    if output_format in ("individual", "both"):
-        for pdf_path in individual_files:
-            archive.write(
-                pdf_path,
-                arcname=f"individual/{pdf_path.name}",
-            )
+                    if output_format in ("individual", "both"):
+                        for pdf_path in individual_files:
+                            archive.write(
+                                pdf_path,
+                                arcname=f"individual/{pdf_path.name}",
+                            )
 
-    if output_format in ("merged", "both"):
-        archive.write(
-            merged_path,
-            arcname="merged_bills.pdf",
-        )
+                    if (
+                        output_format in ("merged", "both")
+                        and merged_path.is_file()
+                    ):
+                        archive.write(
+                            merged_path,
+                            arcname="merged_bills.pdf",
+                        )
 
-    # Include the Excel workbook containing allocated LG Codes
-    if updated_workbook_path.exists():
-        archive.write(
-            updated_workbook_path,
-            arcname="bulk_generation_with_lg_codes.xlsx",
-        )
+                    # Include the Excel workbook containing LG Codes.
+                    if updated_workbook_path.exists():
+                        archive.write(
+                            updated_workbook_path,
+                            arcname="bulk_generation_with_lg_codes.xlsx",
+                        )
 
-    if errors:
-        error_text = "\n".join(
-            f"Excel row {item['row']} "
-            f"({item['property']}): {item['error']}"
-            for item in errors
-        )
-        archive.writestr(
-            "generation_errors.txt",
-            error_text,
-        )
+                    if errors:
+                        error_text = "\n".join(
+                            f"Excel row {item['row']} "
+                            f"({item['property']}): {item['error']}"
+                            for item in errors
+                        )
 
-return FileResponse(
-    path=str(archive_path),
-    media_type="application/zip",
-    filename=archive_path.name,
-)
+                        archive.writestr(
+                            "generation_errors.txt",
+                            error_text,
+                        )
+
+                return FileResponse(
+                    path=str(archive_path),
+                    media_type="application/zip",
+                    filename=archive_path.name,
+                )
+
             except HTTPException:
                 raise
+
             except Exception as exc:
                 raise HTTPException(
                     status_code=500,
