@@ -3,6 +3,7 @@ import secrets
 import string
 from decimal import Decimal
 from io import BytesIO
+from app.lg_code_allocator import get_or_create_lg_code
 
 import pandas as pd
 
@@ -630,14 +631,11 @@ async def import_excel(
             # Generate only when missing.
             # -------------------------------------------------
 
-            if not property_record.lg_code:
-
-                property_record.lg_code = (
-                    generate_lg_code(
-                        db,
-                        prefix
-                    )
-                )
+            property_record.lg_code = get_or_create_lg_code(
+              db,
+              property_record,
+              prefix=prefix
+            )
 
 
             imported += 1
