@@ -10,6 +10,7 @@ from app.database import get_db
 from app import crud
 from app.models import NoticeTemplate, Property
 from app.pdf_generator import generate_notice_pdf
+from app.lg_code_allocator import get_or_create_lg_code
 
 
 router = APIRouter(
@@ -156,23 +157,18 @@ async def generate_notice(
             status_code=404,
             detail="Property not found"
         )
-
     # -----------------------------------------------------
-    # Generate LG Code if missing
+    # Generate or retrieve LG Code
     # -----------------------------------------------------
 
-    if not property_record.lg_code:
-        alphabet = string.ascii_uppercase + string.digits
+    property_record.lg_code = get_or_create_lg_code(
+       db,
+       property_record,
+       prefix=property_record.lg_prefix
+    )
 
-        random_part = "".join(
-            secrets.choice(alphabet)
-            for _ in range(8)
-        )
-
-        property_record.lg_code = f"GUS-{random_part}"
-
-        db.commit()
-        db.refresh(property_record)
+db.commit()
+db.refresh(property_record)
 
     # -----------------------------------------------------
     # Template selection
