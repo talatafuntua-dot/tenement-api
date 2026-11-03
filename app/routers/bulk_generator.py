@@ -217,6 +217,10 @@ async def generate_bulk_bills(
                 if "LG_CODE" not in dataframe.columns:
                     dataframe["LG_CODE"] = None
 
+                # LG Codes are text, not numbers.
+                # Prevent Pandas float64 assignment errors.
+                dataframe["LG_CODE"] = dataframe["LG_CODE"].astype("object")
+
                 seen_codes = set()
 
                 # ---------------------------------------------------
