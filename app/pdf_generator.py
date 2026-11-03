@@ -302,4 +302,3 @@ def generate_notice_pdf(
     )
 
     return str(pdf_file)
-Displaying pdf_generator.py.
