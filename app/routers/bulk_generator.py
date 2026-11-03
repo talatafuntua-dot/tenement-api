@@ -1,14 +1,15 @@
-
 import re
 import shutil
 import tempfile
 import zipfile
+from io import BytesIO
 from pathlib import Path
 from typing import Literal
 
 import pandas as pd
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
+from openpyxl import load_workbook
 from pypdf import PdfWriter
 from sqlalchemy.orm import Session
 
@@ -32,6 +33,61 @@ def safe_name(value, fallback):
     value = str(value or "").strip()
     value = re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
     return value[:100] or fallback
+
+
+def update_original_excel_with_lg_codes(
+    source_bytes: bytes,
+    output_path: Path,
+    lg_codes_by_row: dict[int, str],
+):
+    """
+    Preserve the original Excel workbook exactly as supplied.
+
+    Only the LG CODE cells are changed.
+    No Pandas reconstruction is used for the exported workbook.
+    This prevents blank columns from becoming UNNAMED:_2,
+    UNNAMED:_3, etc.
+    """
+
+    workbook = load_workbook(
+        filename=BytesIO(source_bytes)
+    )
+
+    worksheet = workbook[workbook.sheetnames[0]]
+
+    lg_code_column = None
+
+    # Locate the original LG CODE heading.
+    for cell in worksheet[1]:
+        heading = str(cell.value or "").strip().upper()
+        normalized = heading.replace(" ", "_")
+
+        if normalized in {
+            "LG_CODE",
+            "LGCODE",
+        }:
+            lg_code_column = cell.column
+            break
+
+    # If the workbook does not already contain LG CODE,
+    # add it at the end without disturbing existing columns.
+    if lg_code_column is None:
+        lg_code_column = worksheet.max_column + 1
+        worksheet.cell(
+            row=1,
+            column=lg_code_column,
+            value="LG CODE",
+        )
+
+    # Write only the generated LG Codes.
+    for excel_row, lg_code in lg_codes_by_row.items():
+        worksheet.cell(
+            row=excel_row,
+            column=lg_code_column,
+            value=str(lg_code),
+        )
+
+    workbook.save(output_path)
 
 
 @router.post("/generate")
@@ -144,11 +200,25 @@ async def generate_bulk_bills(
                 if "LG_CODE" not in dataframe.columns:
                     dataframe["LG_CODE"] = None
 
+                # LG Codes are text, not numbers.
+                # This prevents Pandas float64 assignment errors.
+                dataframe["LG_CODE"] = dataframe["LG_CODE"].astype(
+                    "object"
+                )
+
                 seen_codes = set()
+
+                # Keep generated LG Codes separately by original
+                # Excel row number so the original workbook can be
+                # updated without reconstructing its layout.
+                lg_codes_by_row = {}
 
                 # Generate each property's bill separately.
                 for index, row in dataframe.iterrows():
-                    record = row.where(pd.notna(row), None).to_dict()
+                    record = row.where(
+                        pd.notna(row),
+                        None,
+                    ).to_dict()
 
                     property_number = str(
                         record.get("PROPERTY_NO")
@@ -157,7 +227,13 @@ async def generate_bulk_bills(
                     ).strip()
 
                     try:
-                        prefix = record.get("PREFIX") or "LG"
+                        # Accept both the correct PREFIX heading
+                        # and the earlier PRFIX heading.
+                        prefix = (
+                            record.get("PREFIX")
+                            or record.get("PRFIX")
+                            or "LG"
+                        )
 
                         existing_code = str(
                             record.get("LG_CODE") or ""
@@ -170,12 +246,16 @@ async def generate_bulk_bills(
                             # No Property lookup in Neon.
                             lg_code = allocate_bulk_lg_code(
                                 db,
-                                prefix=prefix,
+                                prefix=str(prefix).strip(),
                                 property_identifier=property_number,
                             )
 
-                            # Save the new code into the workbook.
-                            dataframe.at[index, "LG_CODE"] = lg_code
+                            # Save the new code into the Pandas
+                            # dataframe used for PDF generation.
+                            dataframe.at[
+                                index,
+                                "LG_CODE",
+                            ] = lg_code
 
                         if lg_code in seen_codes:
                             raise ValueError(
@@ -183,6 +263,12 @@ async def generate_bulk_bills(
                             )
 
                         seen_codes.add(lg_code)
+
+                        # Excel row 1 is the heading.
+                        # Pandas row 0 therefore corresponds to
+                        # Excel row 2.
+                        excel_row = int(index) + 2
+                        lg_codes_by_row[excel_row] = lg_code
 
                         record["LG_CODE"] = lg_code
                         record["PROPERTY_NO"] = property_number
@@ -195,7 +281,9 @@ async def generate_bulk_bills(
                         )
 
                         if not generated_path.is_file():
-                            raise RuntimeError("The PDF was not created.")
+                            raise RuntimeError(
+                                "The PDF was not created."
+                            )
 
                         filename = (
                             f"{index + 1:04d}_"
@@ -203,7 +291,12 @@ async def generate_bulk_bills(
                         )
 
                         saved_path = batch_dir / filename
-                        shutil.copy2(generated_path, saved_path)
+
+                        shutil.copy2(
+                            generated_path,
+                            saved_path,
+                        )
+
                         individual_files.append(saved_path)
 
                     except Exception as exc:
@@ -217,20 +310,34 @@ async def generate_bulk_bills(
                             }
                         )
 
-                # Save the updated Excel workbook.
+                # ------------------------------------------------
+                # CREATE EXCEL OUTPUT
+                # ------------------------------------------------
+                #
+                # IMPORTANT:
+                # Do NOT use dataframe.to_excel().
+                #
+                # The original workbook is preserved and only
+                # LG CODE cells are updated.
+                #
                 updated_workbook_path = (
-                    batch_dir / "bulk_generation_with_lg_codes.xlsx"
+                    batch_dir
+                    / "bulk_generation_with_lg_codes.xlsx"
                 )
 
-                dataframe.to_excel(
-                    updated_workbook_path,
-                    index=False,
+                update_original_excel_with_lg_codes(
+                    source_bytes=contents,
+                    output_path=updated_workbook_path,
+                    lg_codes_by_row=lg_codes_by_row,
                 )
 
                 # Merge all successfully generated PDFs when requested.
                 merged_path = batch_dir / "merged_bills.pdf"
 
-                if output_format in ("merged", "both") and individual_files:
+                if (
+                    output_format in ("merged", "both")
+                    and individual_files
+                ):
                     writer = PdfWriter()
 
                     try:
@@ -239,12 +346,14 @@ async def generate_bulk_bills(
 
                         with merged_path.open("wb") as output:
                             writer.write(output)
+
                     finally:
                         writer.close()
 
                 # Package the requested output into a ZIP file.
                 archive_path = (
-                    BATCH_DIR / f"bulk_bills_{batch_name}.zip"
+                    BATCH_DIR
+                    / f"bulk_bills_{batch_name}.zip"
                 )
 
                 with zipfile.ZipFile(
@@ -269,7 +378,8 @@ async def generate_bulk_bills(
                             arcname="merged_bills.pdf",
                         )
 
-                    # Include the Excel workbook containing LG Codes.
+                    # Include the original-format Excel workbook
+                    # containing the generated LG Codes.
                     if updated_workbook_path.exists():
                         archive.write(
                             updated_workbook_path,
