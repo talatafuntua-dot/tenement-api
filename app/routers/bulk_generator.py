@@ -1,6 +1,7 @@
 import re
 import shutil
 import tempfile
+import time
 import zipfile
 from io import BytesIO
 from pathlib import Path
@@ -26,6 +27,35 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = BASE_DIR / "output_pdfs"
 BATCH_DIR = OUTPUT_DIR / "bulk_batches"
 CONVERSION_BATCH_SIZE = 25
+
+
+def log_bulk_performance(metrics):
+    """Write a consistent performance report to the Render application log."""
+    total_seconds = time.perf_counter() - metrics["started_at"]
+    submitted = metrics.get("submitted", 0)
+    successful = metrics.get("successful", 0)
+    failed = metrics.get("failed", 0)
+
+    def duration(seconds):
+        seconds = max(0, float(seconds))
+        minutes, remaining = divmod(int(seconds), 60)
+        return f"{minutes:02d}:{remaining:02d}" if minutes else f"{remaining:02d}s"
+
+    print("========== BULK PERFORMANCE REPORT ==========")
+    print(f"Properties submitted: {submitted}")
+    print(f"LG Code allocation:   {duration(metrics.get('allocation_seconds', 0))}")
+    print(f"DOCX rendering:       {duration(metrics.get('render_seconds', 0))}")
+    print(f"PDF conversion:       {duration(metrics.get('conversion_seconds', 0))}")
+    print(f"Conversion batches:   {metrics.get('conversion_batches', 0)}")
+    print(f"PDF merging:          {duration(metrics.get('merge_seconds', 0))}")
+    print(f"Excel updating:       {duration(metrics.get('excel_seconds', 0))}")
+    print(f"ZIP packaging:        {duration(metrics.get('zip_seconds', 0))}")
+    print("----------------------------------------------")
+    print(f"TOTAL TIME:           {duration(total_seconds)}")
+    print(f"DOCX documents:       {metrics.get('rendered', 0)}")
+    print(f"PDF files created:    {successful}")
+    print(f"Failed properties:    {failed}")
+    print("==============================================")
 
 
 def safe_name(value, fallback):
@@ -82,6 +112,21 @@ async def generate_bulk_bills(
     if not template_path.is_file():
         raise HTTPException(status_code=404, detail="The selected Word template file could not be found.")
 
+    performance = {
+        "started_at": time.perf_counter(),
+        "submitted": 0,
+        "rendered": 0,
+        "successful": 0,
+        "failed": 0,
+        "conversion_batches": 0,
+        "allocation_seconds": 0.0,
+        "render_seconds": 0.0,
+        "conversion_seconds": 0.0,
+        "merge_seconds": 0.0,
+        "excel_seconds": 0.0,
+        "zip_seconds": 0.0,
+    }
+
     try:
         contents = await excel_file.read()
         if not contents:
@@ -107,6 +152,7 @@ async def generate_bulk_bills(
 
             if dataframe.empty:
                 raise HTTPException(status_code=400, detail="The Excel workbook contains no data rows.")
+            performance["submitted"] = len(dataframe)
 
             dataframe.columns = [
                 str(column).strip().replace(" ", "_").upper()
@@ -154,6 +200,7 @@ async def generate_bulk_bills(
                     prefix = record.get("PREFIX") or record.get("PRFIX") or "LG"
                     existing_code = str(record.get("LG_CODE") or "").strip()
 
+                    allocation_started = time.perf_counter()
                     if existing_code:
                         lg_code = existing_code
                     else:
@@ -163,6 +210,7 @@ async def generate_bulk_bills(
                             property_identifier=property_number,
                         )
                         dataframe.at[index, "LG_CODE"] = lg_code
+                    performance["allocation_seconds"] += time.perf_counter() - allocation_started
 
                     if lg_code in seen_codes:
                         raise ValueError(f"Duplicate LG Code in workbook: {lg_code}")
@@ -177,11 +225,14 @@ async def generate_bulk_bills(
                     docx_path = docx_dir / docx_name
                     pdf_path = pdf_dir / pdf_name
 
+                    render_started = time.perf_counter()
                     render_notice_docx(
                         property_record=record,
                         docx_path=docx_path,
                         template_path=template_path,
                     )
+                    performance["render_seconds"] += time.perf_counter() - render_started
+                    performance["rendered"] += 1
                     jobs.append((str(docx_path), str(pdf_path)))
                     job_metadata.append({
                         "row": excel_row,
@@ -196,11 +247,17 @@ async def generate_bulk_bills(
             # Phase 2: genuine batch conversion. LibreOffice is launched once
             # for each group of up to CONVERSION_BATCH_SIZE DOCX documents.
             if jobs:
+                performance["conversion_batches"] = (
+                    len(jobs) + CONVERSION_BATCH_SIZE - 1
+                ) // CONVERSION_BATCH_SIZE
+                conversion_started = time.perf_counter()
                 try:
                     with WordConverter(batch_size=CONVERSION_BATCH_SIZE, timeout=600) as word:
                         conversion_results = word.convert_many(jobs)
                 except Exception as exc:
                     conversion_results = [(False, str(exc)) for _ in jobs]
+                finally:
+                    performance["conversion_seconds"] += time.perf_counter() - conversion_started
 
                 for metadata, (ok, message) in zip(job_metadata, conversion_results):
                     if not ok:
@@ -215,16 +272,21 @@ async def generate_bulk_bills(
                 for metadata in job_metadata
                 if metadata["pdf_path"].is_file()
             ]
+            performance["successful"] = len(individual_files)
+            performance["failed"] = len(errors)
 
+            excel_started = time.perf_counter()
             updated_workbook_path = batch_dir / "bulk_generation_with_lg_codes.xlsx"
             update_original_excel_with_lg_codes(
                 source_bytes=contents,
                 output_path=updated_workbook_path,
                 lg_codes_by_row=lg_codes_by_row,
             )
+            performance["excel_seconds"] += time.perf_counter() - excel_started
 
             merged_path = batch_dir / "merged_bills.pdf"
             if output_format in ("merged", "both") and individual_files:
+                merge_started = time.perf_counter()
                 writer = PdfWriter()
                 try:
                     for pdf_path in individual_files:
@@ -233,8 +295,10 @@ async def generate_bulk_bills(
                         writer.write(output)
                 finally:
                     writer.close()
+                    performance["merge_seconds"] += time.perf_counter() - merge_started
 
             archive_path = BATCH_DIR / f"bulk_bills_{batch_name}.zip"
+            zip_started = time.perf_counter()
             with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 if output_format in ("individual", "both"):
                     for pdf_path in individual_files:
@@ -255,6 +319,7 @@ async def generate_bulk_bills(
                     )
                     archive.writestr("generation_errors.txt", error_text)
 
+            performance["zip_seconds"] += time.perf_counter() - zip_started
             return FileResponse(
                 path=str(archive_path),
                 media_type="application/zip",
@@ -266,4 +331,7 @@ async def generate_bulk_bills(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Bulk generation failed: {exc}") from exc
     finally:
-        await excel_file.close()
+        try:
+            await excel_file.close()
+        finally:
+            log_bulk_performance(performance)
