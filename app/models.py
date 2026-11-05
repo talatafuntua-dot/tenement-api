@@ -247,3 +247,33 @@ class LGCodeRegistry(Base):
         server_default=func.now(),
         nullable=False,
     )
+# Add this class at the END of app/models.py.
+# Existing imports already include Column, Integer, String, Text, DateTime and func.
+
+class BulkGenerationJob(Base):
+    __tablename__ = "bulk_generation_jobs"
+
+    id = Column(String(36), primary_key=True, index=True)
+    status = Column(String(20), nullable=False, default="queued", index=True)
+    stage = Column(String(120), nullable=False, default="Waiting to start")
+
+    total = Column(Integer, nullable=False, default=0)
+    processed = Column(Integer, nullable=False, default=0)
+
+    # Progress within the current stage (for example, 25 of 500 PDFs converted).
+    stage_completed = Column(Integer, nullable=False, default=0)
+    stage_total = Column(Integer, nullable=False, default=0)
+
+    successful = Column(Integer, nullable=False, default=0)
+    failed = Column(Integer, nullable=False, default=0)
+
+    zip_path = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
