@@ -61,15 +61,21 @@ def render_notice_docx(property_record, docx_path, template_path=None, template_
     return str(docx_file)
 
 
+
 def generate_notice_pdf(property_record, template_path=None, template_name="template.docx"):
     """Generate one PDF using the original individual-bill workflow."""
     OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
 
+    # Convert SQLAlchemy Property object into the dictionary
+    # already used by the template-rendering workflow.
+    data = prepare_row(property_record)
+
     assessment_no = str(
-        property_record.get("PROPERTY_NO")
-        or property_record.get("ASSESSMENT_NO")
+        data.get("PROPERTY_NO")
+        or data.get("ASSESSMENT_NO")
         or "notice"
     )
+
     safe_name = assessment_no.replace("/", "_").replace("\\", "_").strip() or "notice"
     docx_file = OUTPUT_FOLDER / f"{safe_name}.docx"
     pdf_file = OUTPUT_FOLDER / f"{safe_name}.pdf"
