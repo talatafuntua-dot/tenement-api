@@ -28,7 +28,16 @@ def get_settings():
     return client_id, client_secret, redirect_uri
 
 
-def create_flow(state=None):
+def state_serializer():
+    _, client_secret, _ = get_settings()
+
+    return URLSafeTimedSerializer(
+        client_secret,
+        salt="tenement-google-drive-oauth"
+    )
+
+
+def create_flow(state=None, code_verifier=None):
     client_id, client_secret, redirect_uri = get_settings()
 
     return Flow.from_client_config(
@@ -43,37 +52,39 @@ def create_flow(state=None):
         scopes=SCOPES,
         state=state,
         redirect_uri=redirect_uri,
-    )
-
-
-def state_serializer():
-    _, client_secret, _ = get_settings()
-    return URLSafeTimedSerializer(
-        client_secret,
-        salt="tenement-google-drive-oauth"
+        code_verifier=code_verifier,
     )
 
 
 @router.get("/connect")
-def connect_google_drive():
-    flow = create_flow()
-
+def connect_google_drive(request: Request):
     state = secrets.token_urlsafe(32)
 
-    authorization_url, _ = flow.authorization_url(
+    # Generate and preserve the PKCE verifier for the callback.
+    code_verifier = secrets.token_urlsafe(64)
+
+    flow = create_flow(
         state=state,
+        code_verifier=code_verifier
+    )
+
+    authorization_url, _ = flow.authorization_url(
         access_type="offline",
         prompt="consent",
         include_granted_scopes="true",
     )
 
-    response = RedirectResponse(authorization_url)
+    # Sign both values so they cannot be altered by the browser.
+    signed_data = state_serializer().dumps({
+        "state": state,
+        "code_verifier": code_verifier,
+    })
 
-    signed_state = state_serializer().dumps(state)
+    response = RedirectResponse(authorization_url)
 
     response.set_cookie(
         key=STATE_COOKIE,
-        value=signed_state,
+        value=signed_data,
         max_age=600,
         httponly=True,
         secure=True,
@@ -88,7 +99,7 @@ def connect_google_drive():
 def google_drive_callback(
     request: Request,
     code: str = None,
-    state: str = None
+    state: str = None,
 ):
     if not code:
         raise HTTPException(
@@ -96,32 +107,45 @@ def google_drive_callback(
             detail="Google authorization code missing."
         )
 
-    signed_state = request.cookies.get(STATE_COOKIE)
+    signed_data = request.cookies.get(STATE_COOKIE)
 
-    if not signed_state or not state:
+    if not signed_data:
         raise HTTPException(
             status_code=400,
-            detail="OAuth session missing. Start again from Connect Google Drive."
+            detail="OAuth session expired. Start again."
         )
 
     try:
-        saved_state = state_serializer().loads(
-            signed_state,
+        saved_data = state_serializer().loads(
+            signed_data,
             max_age=600
         )
     except BadSignature:
         raise HTTPException(
             status_code=400,
-            detail="OAuth state expired or invalid. Start again."
+            detail="Invalid or expired OAuth session. Start again."
         )
 
-    if not secrets.compare_digest(saved_state, state):
+    saved_state = saved_data.get("state")
+    code_verifier = saved_data.get("code_verifier")
+
+    if (
+        not saved_state
+        or not code_verifier
+        or not state
+        or not secrets.compare_digest(saved_state, state)
+    ):
         raise HTTPException(
             status_code=400,
             detail="Invalid OAuth state. Start again."
         )
 
-    flow = create_flow(state=state)
+    # Recreate the flow with the SAME PKCE verifier used at connection.
+    flow = create_flow(
+        state=saved_state,
+        code_verifier=code_verifier
+    )
+
     flow.fetch_token(code=code)
 
     credentials = flow.credentials
@@ -140,7 +164,9 @@ def google_drive_callback(
     )
 
     folders = drive.files().list(
-        q="name = 'TENEMENT STORAGE' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+        q="name = 'TENEMENT STORAGE' and "
+          "mimeType = 'application/vnd.google-apps.folder' and "
+          "trashed = false",
         fields="files(id,name)",
         pageSize=20,
     ).execute()
@@ -153,23 +179,28 @@ def google_drive_callback(
             detail="TENEMENT STORAGE folder was not found in this Google account."
         )
 
-    if len(matches) > 1:
-        response = JSONResponse({
-            "message": "More than one TENEMENT STORAGE folder was found.",
-            "folders": matches,
-            "instruction": "Folder selection is required."
-        })
-        response.delete_cookie(STATE_COOKIE, path="/google-drive")
-        return response
-
-    response = JSONResponse({
+    response_data = {
         "message": "Google Drive connected successfully.",
         "folder_name": matches[0]["name"],
         "folder_id": matches[0]["id"],
         "refresh_token": credentials.refresh_token,
-        "instruction": "Copy the refresh token and folder ID into Render environment variables. Keep the refresh token private."
-    })
+        "instruction": (
+            "Copy the refresh token and folder ID into Render "
+            "environment variables. Keep the refresh token private."
+        )
+    }
 
-    response.delete_cookie(STATE_COOKIE, path="/google-drive")
+    if len(matches) > 1:
+        response_data["message"] = (
+            "More than one TENEMENT STORAGE folder was found. "
+            "Folder selection is required."
+        )
+        response_data["folders"] = matches
+
+    response = JSONResponse(response_data)
+    response.delete_cookie(
+        key=STATE_COOKIE,
+        path="/google-drive"
+    )
 
     return response
