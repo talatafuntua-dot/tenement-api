@@ -8,6 +8,13 @@ from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 
 router = APIRouter(prefix="/google-drive", tags=["Google Drive"])
+@router.get("/check-config")
+def check_google_config():
+    return {
+        "client_id_present": bool(os.getenv("GOOGLE_CLIENT_ID")),
+        "client_secret_present": bool(os.getenv("GOOGLE_CLIENT_SECRET")),
+        "redirect_uri_present": bool(os.getenv("GOOGLE_REDIRECT_URI")),
+    }
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 
