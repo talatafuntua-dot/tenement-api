@@ -164,7 +164,7 @@ def google_drive_callback(
     )
 
     folders = drive.files().list(
-        q="name = 'TENEMENT STORAGE' and "
+        q="name = 'TENEMENT STORAGE WEB' and "
           "mimeType = 'application/vnd.google-apps.folder' and "
           "trashed = false",
         fields="files(id,name)",
@@ -176,7 +176,7 @@ def google_drive_callback(
     if not matches:
         raise HTTPException(
             status_code=404,
-            detail="TENEMENT STORAGE folder was not found in this Google account."
+            detail="TENEMENT STORAGE WEB folder was not found in this Google account."
         )
 
     response_data = {
@@ -192,7 +192,7 @@ def google_drive_callback(
 
     if len(matches) > 1:
         response_data["message"] = (
-            "More than one TENEMENT STORAGE folder was found. "
+            "More than one TENEMENT STORAGE WEB folder was found. "
             "Folder selection is required."
         )
         response_data["folders"] = matches
