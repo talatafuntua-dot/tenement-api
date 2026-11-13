@@ -7,6 +7,10 @@ from fastapi.responses import RedirectResponse, JSONResponse
 from itsdangerous import URLSafeTimedSerializer, BadSignature
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request as GoogleAuthRequest
+from googleapiclient.http import MediaFileUpload
+from pathlib import Path
 
 router = APIRouter(prefix="/google-drive", tags=["Google Drive"])
 
@@ -204,3 +208,4 @@ def google_drive_callback(
     )
 
     return response
+from pathlib import Path
