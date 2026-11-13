@@ -1,9 +1,9 @@
+import os
 from pathlib import Path
 
 from app.template_engine import TemplateEngine
 from app.word_converter import WordConverter
 from app.formatter import prepare_row
-from app.google_drive_storage import archive_pdfs_to_drive
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -61,6 +61,7 @@ def render_notice_docx(property_record, docx_path, template_path=None, template_
     return str(docx_file)
 
 
+
 def generate_notice_pdf(property_record, template_path=None, template_name="template.docx"):
     """Generate one PDF using the original individual-bill workflow."""
     OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
@@ -93,9 +94,4 @@ def generate_notice_pdf(property_record, template_path=None, template_name="temp
         raise RuntimeError(msg)
 
     print(f"PDF generated successfully: {pdf_file}")
-
-    # Store a copy in Google Drive. Any Drive error is non-fatal: the local
-    # PDF remains available and the existing API response is preserved.
-    archive_pdfs_to_drive([pdf_file], context=f"individual bill {safe_name}")
-
     return str(pdf_file)
