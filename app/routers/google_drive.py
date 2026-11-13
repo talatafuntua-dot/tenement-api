@@ -1,15 +1,12 @@
+
 import os
 import secrets
-from pathlib import Path
 
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import RedirectResponse, JSONResponse
 from itsdangerous import URLSafeTimedSerializer, BadSignature
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request as GoogleAuthRequest
-from googleapiclient.http import MediaFileUpload
 
 router = APIRouter(prefix="/google-drive", tags=["Google Drive"])
 
@@ -33,6 +30,7 @@ def get_settings():
 
 def state_serializer():
     _, client_secret, _ = get_settings()
+
     return URLSafeTimedSerializer(
         client_secret,
         salt="tenement-google-drive-oauth"
@@ -61,21 +59,29 @@ def create_flow(state=None, code_verifier=None):
 @router.get("/connect")
 def connect_google_drive(request: Request):
     state = secrets.token_urlsafe(32)
+
+    # Generate and preserve the PKCE verifier for the callback.
     code_verifier = secrets.token_urlsafe(64)
 
-    flow = create_flow(state=state, code_verifier=code_verifier)
+    flow = create_flow(
+        state=state,
+        code_verifier=code_verifier
+    )
+
     authorization_url, _ = flow.authorization_url(
         access_type="offline",
         prompt="consent",
         include_granted_scopes="true",
     )
 
+    # Sign both values so they cannot be altered by the browser.
     signed_data = state_serializer().dumps({
         "state": state,
         "code_verifier": code_verifier,
     })
 
     response = RedirectResponse(authorization_url)
+
     response.set_cookie(
         key=STATE_COOKIE,
         value=signed_data,
@@ -85,6 +91,7 @@ def connect_google_drive(request: Request):
         samesite="lax",
         path="/google-drive",
     )
+
     return response
 
 
@@ -101,6 +108,7 @@ def google_drive_callback(
         )
 
     signed_data = request.cookies.get(STATE_COOKIE)
+
     if not signed_data:
         raise HTTPException(
             status_code=400,
@@ -108,7 +116,10 @@ def google_drive_callback(
         )
 
     try:
-        saved_data = state_serializer().loads(signed_data, max_age=600)
+        saved_data = state_serializer().loads(
+            signed_data,
+            max_age=600
+        )
     except BadSignature:
         raise HTTPException(
             status_code=400,
@@ -129,8 +140,14 @@ def google_drive_callback(
             detail="Invalid OAuth state. Start again."
         )
 
-    flow = create_flow(state=saved_state, code_verifier=code_verifier)
+    # Recreate the flow with the SAME PKCE verifier used at connection.
+    flow = create_flow(
+        state=saved_state,
+        code_verifier=code_verifier
+    )
+
     flow.fetch_token(code=code)
+
     credentials = flow.credentials
 
     if not credentials.refresh_token:
@@ -155,6 +172,7 @@ def google_drive_callback(
     ).execute()
 
     matches = folders.get("files", [])
+
     if not matches:
         raise HTTPException(
             status_code=404,
@@ -180,75 +198,9 @@ def google_drive_callback(
         response_data["folders"] = matches
 
     response = JSONResponse(response_data)
-    response.delete_cookie(key=STATE_COOKIE, path="/google-drive")
+    response.delete_cookie(
+        key=STATE_COOKIE,
+        path="/google-drive"
+    )
+
     return response
-
-
-def archive_pdfs_to_drive(pdf_paths, context="PDF archive"):
-    """Upload generated PDF files to the configured Google Drive folder.
-
-    Drive is a secondary archive. Upload errors are logged and do not interrupt
-    individual or bulk bill generation.
-    """
-    refresh_token = os.getenv("GOOGLE_REFRESH_TOKEN")
-    client_id = os.getenv("GOOGLE_CLIENT_ID")
-    client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
-    folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-
-    if not all([refresh_token, client_id, client_secret, folder_id]):
-        print(
-            f"[Google Drive] Skipped {context}: required environment variables are missing."
-        )
-        return {"uploaded": 0, "failed": 0, "skipped": True}
-
-    files_to_upload = [Path(item) for item in pdf_paths if item]
-    files_to_upload = [item for item in files_to_upload if item.is_file()]
-    if not files_to_upload:
-        return {"uploaded": 0, "failed": 0, "skipped": False}
-
-    try:
-        credentials = Credentials(
-            token=None,
-            refresh_token=refresh_token,
-            token_uri="https://oauth2.googleapis.com/token",
-            client_id=client_id,
-            client_secret=client_secret,
-            scopes=SCOPES,
-        )
-        credentials.refresh(GoogleAuthRequest())
-        drive = build(
-            "drive",
-            "v3",
-            credentials=credentials,
-            cache_discovery=False,
-        )
-    except Exception as exc:
-        print(f"[Google Drive] Could not establish connection for {context}: {exc}")
-        return {"uploaded": 0, "failed": len(files_to_upload), "skipped": False}
-
-    uploaded = 0
-    failed = 0
-
-    for pdf_path in files_to_upload:
-        try:
-            media = MediaFileUpload(
-                str(pdf_path),
-                mimetype="application/pdf",
-                resumable=True,
-            )
-            result = drive.files().create(
-                body={"name": pdf_path.name, "parents": [folder_id]},
-                media_body=media,
-                fields="id,name,webViewLink",
-            ).execute()
-            uploaded += 1
-            print(
-                f"[Google Drive] Uploaded {result.get('name')} "
-                f"(file ID: {result.get('id')})"
-            )
-        except Exception as exc:
-            failed += 1
-            print(f"[Google Drive] Failed to upload {pdf_path.name}: {exc}")
-
-    print(f"[Google Drive] {context}: uploaded={uploaded}, failed={failed}.")
-    return {"uploaded": uploaded, "failed": failed, "skipped": False}
