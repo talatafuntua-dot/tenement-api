@@ -20,6 +20,7 @@ from app.pdf_generator import render_notice_docx
 from app.word_converter import WordConverter
 from app.models import NoticeTemplate, BulkGenerationJob
 from app.lg_code_allocator import allocate_bulk_lg_code
+from app.routers.google_drive import archive_pdfs_to_drive
 
 
 router = APIRouter(prefix="/bulk-bills", tags=["Bulk Bill Generation"])
@@ -705,6 +706,17 @@ def run_bulk_generation_job(job_id, source_path, original_filename, template_id,
             failed=performance["failed"],
             zip_path=str(archive_path),
             error=None,
+        )
+
+        # Archive generated PDFs in Google Drive after the job is completed.
+        # This does not delay the progress bar or ZIP download.
+        drive_files = list(individual_files)
+        if merged_path.is_file():
+            drive_files.append(merged_path)
+
+        archive_pdfs_to_drive(
+            drive_files,
+            context=f"background bulk job {job_id}",
         )
 
     except Exception as exc:
