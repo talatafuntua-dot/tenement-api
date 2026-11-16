@@ -708,11 +708,16 @@ def run_bulk_generation_job(job_id, source_path, original_filename, template_id,
             error=None,
         )
 
-        # Archive generated PDFs in Google Drive after the job is completed.
-        # This does not delay the progress bar or ZIP download.
-        drive_files = list(individual_files)
-        if merged_path.is_file():
-            drive_files.append(merged_path)
+        # Archive only the PDF files selected by the user.
+        # This does not change generation, merging, ZIP packaging, or PC downloads.
+        if output_format == "individual":
+            drive_files = list(individual_files)
+        elif output_format == "merged":
+            drive_files = [merged_path] if merged_path.is_file() else []
+        else:  # output_format == "both"
+            drive_files = list(individual_files)
+            if merged_path.is_file():
+                drive_files.append(merged_path)
 
         archive_pdfs_to_drive(
             drive_files,
