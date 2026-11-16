@@ -1,11 +1,12 @@
-
 import os
 import secrets
+import threading
 from pathlib import Path
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import RedirectResponse, JSONResponse
-
 from itsdangerous import URLSafeTimedSerializer, BadSignature
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
@@ -13,11 +14,13 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from googleapiclient.http import MediaFileUpload
 
-
 router = APIRouter(prefix="/google-drive", tags=["Google Drive"])
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 STATE_COOKIE = "google_drive_oauth_state"
+NIGERIA_TIMEZONE = ZoneInfo("Africa/Lagos")
+FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
+_folder_creation_lock = threading.Lock()
 
 
 def get_settings():
@@ -36,7 +39,6 @@ def get_settings():
 
 def state_serializer():
     _, client_secret, _ = get_settings()
-
     return URLSafeTimedSerializer(
         client_secret,
         salt="tenement-google-drive-oauth"
@@ -67,11 +69,7 @@ def connect_google_drive(request: Request):
     state = secrets.token_urlsafe(32)
     code_verifier = secrets.token_urlsafe(64)
 
-    flow = create_flow(
-        state=state,
-        code_verifier=code_verifier
-    )
-
+    flow = create_flow(state=state, code_verifier=code_verifier)
     authorization_url, _ = flow.authorization_url(
         access_type="offline",
         prompt="consent",
@@ -84,7 +82,6 @@ def connect_google_drive(request: Request):
     })
 
     response = RedirectResponse(authorization_url)
-
     response.set_cookie(
         key=STATE_COOKIE,
         value=signed_data,
@@ -94,7 +91,6 @@ def connect_google_drive(request: Request):
         samesite="lax",
         path="/google-drive",
     )
-
     return response
 
 
@@ -111,7 +107,6 @@ def google_drive_callback(
         )
 
     signed_data = request.cookies.get(STATE_COOKIE)
-
     if not signed_data:
         raise HTTPException(
             status_code=400,
@@ -119,10 +114,7 @@ def google_drive_callback(
         )
 
     try:
-        saved_data = state_serializer().loads(
-            signed_data,
-            max_age=600
-        )
+        saved_data = state_serializer().loads(signed_data, max_age=600)
     except BadSignature:
         raise HTTPException(
             status_code=400,
@@ -143,13 +135,8 @@ def google_drive_callback(
             detail="Invalid OAuth state. Start again."
         )
 
-    flow = create_flow(
-        state=saved_state,
-        code_verifier=code_verifier
-    )
-
+    flow = create_flow(state=saved_state, code_verifier=code_verifier)
     flow.fetch_token(code=code)
-
     credentials = flow.credentials
 
     if not credentials.refresh_token:
@@ -174,7 +161,6 @@ def google_drive_callback(
     ).execute()
 
     matches = folders.get("files", [])
-
     if not matches:
         raise HTTPException(
             status_code=404,
@@ -200,67 +186,114 @@ def google_drive_callback(
         response_data["folders"] = matches
 
     response = JSONResponse(response_data)
-
-    response.delete_cookie(
-        key=STATE_COOKIE,
-        path="/google-drive"
-    )
-
+    response.delete_cookie(key=STATE_COOKIE, path="/google-drive")
     return response
 
 
-def archive_pdfs_to_drive(pdf_paths, context="PDF archive"):
-    """
-    Upload generated PDF files to the configured Google Drive folder.
+def _escape_drive_query(value):
+    """Escape a value embedded in a Google Drive q expression."""
+    return str(value).replace("\\", "\\\\").replace("'", "\\'")
 
-    Google Drive is a secondary archive.
-    Upload failures must not interrupt bill generation.
-    """
 
+def _get_or_create_folder(drive, name, parent_id):
+    """Find a folder under one parent, creating it only when absent."""
+    safe_name = _escape_drive_query(name)
+    query = (
+        f"name = '{safe_name}' and "
+        f"mimeType = '{FOLDER_MIME_TYPE}' and "
+        f"'{parent_id}' in parents and trashed = false"
+    )
+    result = drive.files().list(
+        q=query,
+        fields="files(id,name)",
+        pageSize=100,
+    ).execute()
+    matches = result.get("files", [])
+    if matches:
+        return matches[0]["id"]
+
+    created = drive.files().create(
+        body={
+            "name": name,
+            "mimeType": FOLDER_MIME_TYPE,
+            "parents": [parent_id],
+        },
+        fields="id,name",
+    ).execute()
+    print(f"[Google Drive] Created folder: {name} (ID: {created.get('id')})")
+    return created["id"]
+
+
+def _daily_category_folder(drive, root_folder_id, category, now=None):
+    """Return the category folder for today's Nigerian calendar date."""
+    now = now or datetime.now(NIGERIA_TIMEZONE)
+    year_name = now.strftime("%Y")
+    month_name = now.strftime("%B")
+    day_name = now.strftime("%d %B %Y")
+
+    # Serialize folder lookup/creation within this Render process so two
+    # simultaneous uploads do not create duplicate folders in the same run.
+    with _folder_creation_lock:
+        year_id = _get_or_create_folder(drive, year_name, root_folder_id)
+        month_id = _get_or_create_folder(drive, month_name, year_id)
+        day_id = _get_or_create_folder(drive, day_name, month_id)
+        return _get_or_create_folder(drive, category, day_id)
+
+
+def _category_for_file(pdf_path, context="", category=None):
+    """Resolve the filing compartment without changing generated filenames."""
+    if category:
+        allowed = {
+            "Individual Bills",
+            "Bulk Bills",
+            "Scanned Notices",
+            "Merged PDFs",
+        }
+        if category not in allowed:
+            raise ValueError(
+                f"Unsupported Google Drive category: {category}. "
+                f"Choose one of: {', '.join(sorted(allowed))}."
+            )
+        return category
+
+    filename = Path(pdf_path).name.lower()
+    context_text = str(context or "").lower()
+
+    if "merged" in filename or "merged" in context_text:
+        return "Merged PDFs"
+    if any(word in context_text for word in ("scan", "scanned", "demand notice upload")):
+        return "Scanned Notices"
+    if "individual bill" in context_text:
+        return "Individual Bills"
+    if "bulk" in context_text:
+        return "Bulk Bills"
+
+    # Keep unclassified PDFs out of the root folder as well.
+    return "Individual Bills"
+
+
+def archive_pdfs_to_drive(pdf_paths, context="PDF archive", category=None):
+    """Archive PDFs under YYYY/Month/DD Month YYYY/category in Google Drive.
+
+    Drive is a secondary archive. Upload errors are logged and do not interrupt
+    individual or bulk bill generation. Existing OAuth and environment settings
+    remain unchanged.
+    """
     refresh_token = os.getenv("GOOGLE_REFRESH_TOKEN")
     client_id = os.getenv("GOOGLE_CLIENT_ID")
     client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
     folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
-    if not all([
-        refresh_token,
-        client_id,
-        client_secret,
-        folder_id
-    ]):
+    if not all([refresh_token, client_id, client_secret, folder_id]):
         print(
-            f"[Google Drive] Skipped {context}: "
-            "required environment variables are missing."
+            f"[Google Drive] Skipped {context}: required environment variables are missing."
         )
+        return {"uploaded": 0, "failed": 0, "skipped": True}
 
-        return {
-            "uploaded": 0,
-            "failed": 0,
-            "skipped": True
-        }
-
-    files_to_upload = [
-        Path(item)
-        for item in pdf_paths
-        if item
-    ]
-
-    files_to_upload = [
-        item
-        for item in files_to_upload
-        if item.is_file()
-    ]
-
+    files_to_upload = [Path(item) for item in pdf_paths if item]
+    files_to_upload = [item for item in files_to_upload if item.is_file()]
     if not files_to_upload:
-        print(
-            f"[Google Drive] No PDF files found for {context}."
-        )
-
-        return {
-            "uploaded": 0,
-            "failed": 0,
-            "skipped": False
-        }
+        return {"uploaded": 0, "failed": 0, "skipped": False}
 
     try:
         credentials = Credentials(
@@ -271,72 +304,58 @@ def archive_pdfs_to_drive(pdf_paths, context="PDF archive"):
             client_secret=client_secret,
             scopes=SCOPES,
         )
-
         credentials.refresh(GoogleAuthRequest())
-
         drive = build(
             "drive",
             "v3",
             credentials=credentials,
             cache_discovery=False,
         )
-
     except Exception as exc:
-        print(
-            f"[Google Drive] Could not establish connection "
-            f"for {context}: {exc}"
-        )
-
-        return {
-            "uploaded": 0,
-            "failed": len(files_to_upload),
-            "skipped": False
-        }
+        print(f"[Google Drive] Could not establish connection for {context}: {exc}")
+        return {"uploaded": 0, "failed": len(files_to_upload), "skipped": False}
 
     uploaded = 0
     failed = 0
 
-    for pdf_path in files_to_upload:
+    # Resolve the date once per upload batch. A batch crossing midnight remains
+    # filed together under the date on which its archive operation began.
+    nigeria_now = datetime.now(NIGERIA_TIMEZONE)
+    category_folder_ids = {}
 
+    for pdf_path in files_to_upload:
         try:
+            file_category = _category_for_file(pdf_path, context, category)
+            if file_category not in category_folder_ids:
+                category_folder_ids[file_category] = _daily_category_folder(
+                    drive,
+                    folder_id,
+                    file_category,
+                    now=nigeria_now,
+                )
+
             media = MediaFileUpload(
                 str(pdf_path),
                 mimetype="application/pdf",
                 resumable=True,
             )
-
             result = drive.files().create(
                 body={
                     "name": pdf_path.name,
-                    "parents": [folder_id]
+                    "parents": [category_folder_ids[file_category]],
                 },
                 media_body=media,
                 fields="id,name,webViewLink",
             ).execute()
-
             uploaded += 1
-
             print(
-                f"[Google Drive] Uploaded "
-                f"{result.get('name')} "
+                f"[Google Drive] Uploaded {result.get('name')} "
+                f"to {file_category} "
                 f"(file ID: {result.get('id')})"
             )
-
         except Exception as exc:
             failed += 1
+            print(f"[Google Drive] Failed to upload {pdf_path.name}: {exc}")
 
-            print(
-                f"[Google Drive] Failed to upload "
-                f"{pdf_path.name}: {exc}"
-            )
-
-    print(
-        f"[Google Drive] {context}: "
-        f"uploaded={uploaded}, failed={failed}."
-    )
-
-    return {
-        "uploaded": uploaded,
-        "failed": failed,
-        "skipped": False
-    }
+    print(f"[Google Drive] {context}: uploaded={uploaded}, failed={failed}.")
+    return {"uploaded": uploaded, "failed": failed, "skipped": False}
