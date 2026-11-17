@@ -10,6 +10,8 @@ from app.routers import records
 from app.routers import bulk_generator
 from app.routers import master_journal
 from app.routers import google_drive
+from app.routers import storage_retriever
+
 
 
 
@@ -37,6 +39,7 @@ app.include_router(records.router)
 app.include_router(bulk_generator.router)
 app.include_router(master_journal.router)
 app.include_router(google_drive.router)
+app.include_router(storage_retriever.router)
 
 @app.get("/")
 def home():
