@@ -145,11 +145,13 @@ async def generate_notice(
             .filter(Property.id == property_id)
             .first()
         )
+
     elif property_no:
         property_record = crud.get_property_by_number(
             db,
             property_no
         )
+
     else:
         raise HTTPException(
             status_code=400,
@@ -161,14 +163,15 @@ async def generate_notice(
             status_code=404,
             detail="Property not found"
         )
+
     # -----------------------------------------------------
     # Generate or retrieve LG Code
     # -----------------------------------------------------
 
     property_record.lg_code = get_or_create_lg_code(
-       db,
-       property_record,
-       prefix=property_record.lg_prefix
+        db,
+        property_record,
+        prefix=property_record.lg_prefix
     )
 
     db.commit()
@@ -231,43 +234,46 @@ async def generate_notice(
             property_record=property_record,
             template_path=template_path
         )
+
     except FileNotFoundError as error:
         raise HTTPException(
             status_code=404,
             detail=str(error)
         )
+
     except ValueError as error:
         raise HTTPException(
             status_code=400,
             detail=str(error)
         )
+
     except Exception as error:
         raise HTTPException(
             status_code=500,
             detail=str(error)
         )
 
-   # -----------------------------------------------------
-# RECORD SUCCESSFUL INDIVIDUAL BILL GENERATION
-# -----------------------------------------------------
+    # -----------------------------------------------------
+    # RECORD SUCCESSFUL INDIVIDUAL BILL GENERATION
+    # -----------------------------------------------------
 
-history_record = IndividualGenerationHistory(
-    property_id=property_record.id,
-    property_no=property_record.property_no,
-    lg_code=property_record.lg_code,
-    template_id=template_id,
-    pdf_filename=Path(pdf_file).name if pdf_file else None
-)
+    history_record = IndividualGenerationHistory(
+        property_id=property_record.id,
+        property_no=property_record.property_no,
+        lg_code=property_record.lg_code,
+        template_id=template_id,
+        pdf_filename=Path(pdf_file).name if pdf_file else None
+    )
 
-db.add(history_record)
-db.commit()
+    db.add(history_record)
+    db.commit()
 
-return {
-    "message": "Notice generated successfully",
-    "pdf": pdf_file,
-    "template": template_name,
-    "template_id": template_id
-}
+    return {
+        "message": "Notice generated successfully",
+        "pdf": pdf_file,
+        "template": template_name,
+        "template_id": template_id
+    }
 
 
 # =========================================================
