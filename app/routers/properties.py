@@ -8,7 +8,11 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import crud
-from app.models import NoticeTemplate, Property
+from app.models import (
+    NoticeTemplate,
+    Property,
+    IndividualGenerationHistory
+)
 from app.pdf_generator import generate_notice_pdf
 from app.lg_code_allocator import get_or_create_lg_code
 
@@ -243,12 +247,27 @@ async def generate_notice(
             detail=str(error)
         )
 
-    return {
-        "message": "Notice generated successfully",
-        "pdf": pdf_file,
-        "template": template_name,
-        "template_id": template_id
-    }
+   # -----------------------------------------------------
+# RECORD SUCCESSFUL INDIVIDUAL BILL GENERATION
+# -----------------------------------------------------
+
+history_record = IndividualGenerationHistory(
+    property_id=property_record.id,
+    property_no=property_record.property_no,
+    lg_code=property_record.lg_code,
+    template_id=template_id,
+    pdf_filename=Path(pdf_file).name if pdf_file else None
+)
+
+db.add(history_record)
+db.commit()
+
+return {
+    "message": "Notice generated successfully",
+    "pdf": pdf_file,
+    "template": template_name,
+    "template_id": template_id
+}
 
 
 # =========================================================
