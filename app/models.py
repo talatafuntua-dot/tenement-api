@@ -277,3 +277,53 @@ class BulkGenerationJob(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+# =========================================================
+# INDIVIDUAL BILL GENERATION HISTORY
+# =========================================================
+
+class IndividualGenerationHistory(Base):
+    __tablename__ = "individual_generation_history"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    property_id = Column(
+        Integer,
+        ForeignKey("properties.id"),
+        nullable=False,
+        index=True
+    )
+
+    property_no = Column(
+        String(50),
+        nullable=False,
+        index=True
+    )
+
+    lg_code = Column(
+        String(50),
+        nullable=True,
+        index=True
+    )
+
+    template_id = Column(
+        Integer,
+        ForeignKey("notice_templates.id"),
+        nullable=True
+    )
+
+    pdf_filename = Column(
+        String(255),
+        nullable=True
+    )
+
+    generated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        index=True
+    )
