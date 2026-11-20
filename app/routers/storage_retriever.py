@@ -3,8 +3,8 @@
 Google Drive Tenement Bill Retriever
 ------------------------------------
 Searches the existing TENEMENT STORAGE WEB archive in:
-YYYY / Month / DD Month YYYY / Individual Bills or Merged PDFs
-
+YYYY / Month / DD Month YYYY / Individual Bills, Bulk Bills or Merged PDFs
+a
 It does not modify, move, rename, or delete archived files.
 Scanned/image-only PDFs are reported as needing OCR; this module does not
 pretend that text extraction can search their contents.
@@ -14,9 +14,13 @@ import io
 import os
 import re
 import secrets
+import tempfile
+import zipfile
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException, Header, Depends
+from fastapi import APIRouter, HTTPException, Header, Depends, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func
@@ -44,7 +48,7 @@ router = APIRouter(
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 PDF_MIME_TYPE = "application/pdf"
-SEARCH_CATEGORIES = {"Individual Bills", "Merged PDFs"}
+SEARCH_CATEGORIES = {"Individual Bills", "Bulk Bills", "Merged PDFs"}
 
 
 # =========================================================
@@ -110,54 +114,185 @@ class ExtractRequest(BaseModel):
 # BILL GENERATION COUNT
 # =========================================================
 
+def _model_timestamp_column(model, preferred_names=None):
+    """Find a timestamp column without assuming a model version."""
+    available = set(model.__table__.columns.keys())
+    candidates = preferred_names or (
+        "created_at",
+        "generated_at",
+        "generation_time",
+        "timestamp",
+        "created_on",
+        "generation_date",
+    )
+    for name in candidates:
+        if name in available:
+            return getattr(model, name)
+    raise RuntimeError(
+        f"{model.__name__} has no recognised generation timestamp column. "
+        f"Available columns: {', '.join(sorted(available))}"
+    )
+
+
+def _nigeria_day_utc_bounds(selected_day: date, column):
+    """Convert a Nigeria calendar day to UTC bounds for database filtering."""
+    nigeria = ZoneInfo("Africa/Lagos")
+    local_start = datetime.combine(selected_day, time.min, tzinfo=nigeria)
+    local_end = local_start + timedelta(days=1)
+    start_utc = local_start.astimezone(timezone.utc)
+    end_utc = local_end.astimezone(timezone.utc)
+    if not getattr(column.type, "timezone", False):
+        start_utc = start_utc.replace(tzinfo=None)
+        end_utc = end_utc.replace(tzinfo=None)
+    return start_utc, end_utc
+
+
 @router.get("/generation-count")
 def get_generation_count(
+    selected_date: date = Query(..., alias="date"),
     db: Session = Depends(get_db),
     _auth: None = Depends(_check_retriever_key),
 ):
-    """
-    Count successful bill generations.
-
-    Individual bills:
-        Count every successful individual generation record.
-
-    Bulk bills:
-        Sum successful bills recorded per bulk job.
-
-    Merged PDFs are not counted separately.
-    Repeated generations are counted again.
-    """
-
+    """Return successful individual and bulk bill counts for one Nigeria day."""
     try:
+        individual_timestamp = _model_timestamp_column(IndividualGenerationHistory)
+        individual_start, individual_end = _nigeria_day_utc_bounds(
+            selected_date, individual_timestamp
+        )
         individual_count = (
             db.query(IndividualGenerationHistory)
+            .filter(
+                individual_timestamp >= individual_start,
+                individual_timestamp < individual_end,
+            )
             .count()
         )
 
+        bulk_timestamp = _model_timestamp_column(
+            BulkGenerationJob,
+            preferred_names=(
+                "updated_at",
+                "completed_at",
+                "created_at",
+                "generated_at",
+                "timestamp",
+            ),
+        )
+        bulk_start, bulk_end = _nigeria_day_utc_bounds(
+            selected_date, bulk_timestamp
+        )
         bulk_count = (
-            db.query(
-                func.coalesce(
-                    func.sum(BulkGenerationJob.successful),
-                    0
-                )
+            db.query(func.coalesce(func.sum(BulkGenerationJob.successful), 0))
+            .filter(
+                bulk_timestamp >= bulk_start,
+                bulk_timestamp < bulk_end,
             )
             .scalar()
         )
 
+        individual_count = int(individual_count or 0)
         bulk_count = int(bulk_count or 0)
-
-        total_count = individual_count + bulk_count
-
         return {
+            "date": selected_date.isoformat(),
             "individual_count": individual_count,
             "bulk_count": bulk_count,
-            "total_generated": total_count
+            "total_generated": individual_count + bulk_count,
         }
-
     except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"Could not retrieve generation count: {exc}"
+            detail=f"Could not retrieve daily generation count: {exc}",
+        ) from exc
+
+
+def _safe_zip_member_name(value: str) -> str:
+    """Keep archive entries inside their category directory."""
+    name = os.path.basename(str(value or "ARCHIVED_BILL.pdf"))
+    name = re.sub(r"[^A-Za-z0-9._ -]+", "_", name).strip(" .")
+    return name or "ARCHIVED_BILL.pdf"
+
+
+def _iter_temporary_file(file_obj, chunk_size=1024 * 1024):
+    try:
+        file_obj.seek(0)
+        while True:
+            chunk = file_obj.read(chunk_size)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        file_obj.close()
+
+
+@router.get("/daily-download")
+def download_all_daily_pdfs(
+    selected_date: date = Query(..., alias="date"),
+    _auth: None = Depends(_check_retriever_key),
+):
+    """
+    Download original bill PDFs for the selected Nigeria calendar day.
+    Includes Individual Bills, Bulk Bills and Merged PDFs without modifying
+    the PDF contents.
+    """
+    drive = _drive_client()
+    expected_day_folder = selected_date.strftime("%d %B %Y")
+    expected_year_folder = selected_date.strftime("%Y")
+
+    try:
+        daily_files = [
+            item for item in _archive_pdf_files(drive)
+            if item.get("archive_year") == expected_year_folder
+            and item.get("archive_date") == expected_day_folder
+            and item.get("archive_category") in SEARCH_CATEGORIES
+        ]
+        if not daily_files:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No archived bill PDFs were found for {selected_date.isoformat()}.",
+            )
+
+        output = tempfile.SpooledTemporaryFile(max_size=50 * 1024 * 1024, mode="w+b")
+        used_names = set()
+        downloaded_count = 0
+        with zipfile.ZipFile(
+            output, mode="w", compression=zipfile.ZIP_STORED, allowZip64=True
+        ) as archive:
+            for item in daily_files:
+                pdf_bytes = _download_pdf(drive, item["id"])
+                category = item.get("archive_category", "Bills")
+                filename = _safe_zip_member_name(item.get("name"))
+                stem, extension = os.path.splitext(filename)
+                member_name = f"{category}/{filename}"
+                suffix = 2
+                while member_name.casefold() in used_names:
+                    member_name = f"{category}/{stem}_{suffix}{extension}"
+                    suffix += 1
+                used_names.add(member_name.casefold())
+                archive.writestr(member_name, pdf_bytes)
+                downloaded_count += 1
+
+        output.seek(0)
+        zip_name = f"TENEMENT_BILLS_{selected_date.isoformat()}.zip"
+        return StreamingResponse(
+            _iter_temporary_file(output),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{zip_name}"',
+                "X-PDF-Count": str(downloaded_count),
+                "Cache-Control": "no-store",
+            },
+        )
+    except HTTPException:
+        raise
+    except HttpError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Google Drive daily PDF retrieval failed: {exc}",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not create the daily PDF download: {exc}",
         ) from exc
 
 
@@ -262,7 +397,7 @@ def _list_children(
 
 
 def _archive_pdf_files(drive):
-    """Find PDFs only inside the two bill categories, at any archive date."""
+    """Find PDFs inside supported bill categories, at any archive date."""
 
     root_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
@@ -404,7 +539,7 @@ def search_archived_bills(
     _auth: None = Depends(_check_retriever_key),
 ):
     """
-    Search bill PDFs by LG Code or occupier name.
+    Search individual, bulk and merged bill PDFs by LG Code or occupier name.
     Returns file IDs, matching page numbers and Drive view links.
     """
 
