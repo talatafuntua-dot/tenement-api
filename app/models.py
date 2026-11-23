@@ -125,6 +125,10 @@ class BulkGenerationJob(Base):
     # Existing ZIP output
     zip_path = Column(Text, nullable=True)
 
+    # ZIP file stored in Google Drive
+    zip_file_id = Column(String(255), nullable=True)
+    zip_filename = Column(String(255), nullable=True)
+
     # Google Drive batch folder
     drive_folder_id = Column(String(255), nullable=True)
 
