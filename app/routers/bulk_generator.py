@@ -6,21 +6,24 @@ import uuid
 import zipfile
 from io import BytesIO
 from pathlib import Path
+from datetime import datetime, date, time as datetime_time, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Literal
 
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from openpyxl import load_workbook
 from pypdf import PdfWriter
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.database import get_db, SessionLocal
 from app.pdf_generator import render_notice_docx
 from app.word_converter import WordConverter
 from app.models import NoticeTemplate, BulkGenerationJob
 from app.lg_code_allocator import allocate_bulk_lg_code
-from app.routers.google_drive import archive_pdfs_to_drive
+from app.routers.google_drive import archive_bulk_batch_to_drive, download_drive_file
 
 
 router = APIRouter(prefix="/bulk-bills", tags=["Bulk Bill Generation"])
@@ -365,7 +368,7 @@ def _save_job(db, job_id, **changes):
     return job
 
 
-def run_bulk_generation_job(job_id, source_path, original_filename, template_id, output_format):
+def run_bulk_generation_job(job_id, source_path, original_filename, template_id, output_format, batch_name):
     """Run a submitted bulk job after the API has returned its job ID."""
     db = SessionLocal()
     performance = {
@@ -708,20 +711,36 @@ def run_bulk_generation_job(job_id, source_path, original_filename, template_id,
             error=None,
         )
 
-        # Archive only the PDF files selected by the user.
-        # This does not change generation, merging, ZIP packaging, or PC downloads.
-        if output_format == "individual":
-            drive_files = list(individual_files)
-        elif output_format == "merged":
-            drive_files = [merged_path] if merged_path.is_file() else []
-        else:  # output_format == "both"
-            drive_files = list(individual_files)
-            if merged_path.is_file():
-                drive_files.append(merged_path)
+        # Archive the complete named batch in its own Drive folder.
+        # Google Drive is secondary storage: failures do not undo generation.
+        drive_batch_files = {
+            "original_excel": workbook_path,
+            "updated_excel": updated_workbook_path,
+            "zip": archive_path,
+        }
+        if output_format in ("individual", "both"):
+            for file_index, pdf_path in enumerate(individual_files, start=1):
+                drive_batch_files[f"pdf_{file_index}"] = pdf_path
+        if output_format in ("merged", "both") and merged_path.is_file():
+            drive_batch_files["merged_pdf"] = merged_path
 
-        archive_pdfs_to_drive(
-            drive_files,
-            context=f"background bulk job {job_id}",
+        drive_result = archive_bulk_batch_to_drive(
+            batch_name=batch_name,
+            job_id=job_id,
+            files=drive_batch_files,
+        )
+        drive_files = drive_result.get("files", {})
+        _save_job(
+            db, job_id,
+            drive_folder_id=drive_result.get("folder_id"),
+            original_excel_file_id=(drive_files.get("original_excel") or {}).get("id"),
+            original_excel_filename=(drive_files.get("original_excel") or {}).get("name"),
+            updated_excel_file_id=(drive_files.get("updated_excel") or {}).get("id"),
+            updated_excel_filename=(drive_files.get("updated_excel") or {}).get("name"),
+            merged_pdf_file_id=(drive_files.get("merged_pdf") or {}).get("id"),
+            merged_pdf_filename=(drive_files.get("merged_pdf") or {}).get("name"),
+            zip_file_id=(drive_files.get("zip") or {}).get("id"),
+            zip_filename=(drive_files.get("zip") or {}).get("name"),
         )
 
     except Exception as exc:
@@ -748,9 +767,16 @@ async def start_bulk_generation(
     excel_file: UploadFile = File(...),
     template_id: int = Form(...),
     output_format: Literal["individual", "merged", "both"] = Form("individual"),
+    batch_name: str = Form(...),
     db: Session = Depends(get_db),
 ):
-    """Accept the workbook, create a tracked job and return immediately."""
+    """Accept a named workbook batch, create a tracked job and return immediately."""
+    batch_name = str(batch_name or "").strip()
+    if not batch_name:
+        raise HTTPException(status_code=400, detail="Enter a batch name before generation.")
+    if len(batch_name) > 255:
+        raise HTTPException(status_code=400, detail="Batch name must not exceed 255 characters.")
+
     if not excel_file.filename or not excel_file.filename.lower().endswith(".xlsx"):
         raise HTTPException(
             status_code=400,
@@ -786,6 +812,7 @@ async def start_bulk_generation(
 
     job = BulkGenerationJob(
         id=job_id,
+        batch_name=batch_name,
         status="queued",
         stage="Waiting to start",
         total=0,
@@ -807,10 +834,12 @@ async def start_bulk_generation(
         original_filename,
         template_id,
         output_format,
+        batch_name,
     )
 
     return {
         "job_id": job_id,
+        "batch_name": batch_name,
         "status": "queued",
         "message": "Bulk generation has been accepted.",
     }
@@ -833,6 +862,8 @@ def get_bulk_generation_status(
 
     return {
         "job_id": job.id,
+        "batch_name": getattr(job, "batch_name", None),
+        "created_at": job.created_at.isoformat() if getattr(job, "created_at", None) else None,
         "status": job.status,
         "stage": job.stage,
         "processed": job.processed,
@@ -845,9 +876,11 @@ def get_bulk_generation_status(
         "error": job.error,
         "download_ready": (
             job.status == "completed"
-            and bool(job.zip_path)
-            and Path(job.zip_path).is_file()
+            and ((bool(job.zip_path) and Path(job.zip_path).is_file()) or bool(getattr(job, "zip_file_id", None)))
         ),
+        "drive_folder_ready": bool(getattr(job, "drive_folder_id", None)),
+        "original_excel_ready": bool(getattr(job, "original_excel_file_id", None)),
+        "updated_excel_ready": bool(getattr(job, "updated_excel_file_id", None)),
     }
 
 
@@ -862,21 +895,140 @@ def download_bulk_generation(
     if job is None:
         raise HTTPException(status_code=404, detail="Bulk generation job not found.")
 
-    if job.status != "completed" or not job.zip_path:
+    if job.status != "completed":
         raise HTTPException(
             status_code=409,
             detail="The ZIP file is not ready yet.",
         )
 
-    archive_path = Path(job.zip_path)
-    if not archive_path.is_file():
-        raise HTTPException(
-            status_code=410,
-            detail="The generated ZIP file is no longer available. The server may have restarted.",
+    archive_path = Path(job.zip_path) if job.zip_path else None
+    if archive_path and archive_path.is_file():
+        return FileResponse(
+            path=str(archive_path),
+            media_type="application/zip",
+            filename=archive_path.name,
         )
 
-    return FileResponse(
-        path=str(archive_path),
-        media_type="application/zip",
-        filename=archive_path.name,
+    drive_file_id = getattr(job, "zip_file_id", None)
+    if drive_file_id:
+        try:
+            content, filename, mime_type = download_drive_file(drive_file_id)
+            return Response(
+                content=content,
+                media_type=mime_type or "application/zip",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Unable to retrieve the ZIP from Google Drive: {exc}") from exc
+
+    raise HTTPException(
+        status_code=410,
+        detail="The generated ZIP is no longer available locally or in Google Drive.",
     )
+
+# =====================================================
+# NAMED BATCH SEARCH AND DRIVE DOWNLOADS
+# =====================================================
+
+NIGERIA_TIMEZONE = ZoneInfo("Africa/Lagos")
+
+
+def _download_batch_drive_asset(job, file_id_attr, filename_attr, fallback_name):
+    file_id = getattr(job, file_id_attr, None)
+    if not file_id:
+        raise HTTPException(status_code=404, detail="This file has not been archived in Google Drive.")
+    try:
+        content, drive_filename, mime_type = download_drive_file(file_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Google Drive download failed: {exc}") from exc
+
+    filename = getattr(job, filename_attr, None) or drive_filename or fallback_name
+    return Response(
+        content=content,
+        media_type=mime_type or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/batches")
+def search_bulk_batches(
+    batch_name: str | None = None,
+    generation_date: date | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    """Search completed/queued batches by name and/or creation date."""
+    if not batch_name and not generation_date:
+        raise HTTPException(
+            status_code=400,
+            detail="Enter a batch name or choose a generation date to search.",
+        )
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+
+    query = db.query(BulkGenerationJob)
+    if batch_name:
+        query = query.filter(BulkGenerationJob.batch_name.ilike(f"%{batch_name.strip()}%"))
+    if generation_date:
+        # Search by Nigeria's calendar day even though Render/DB timestamps
+        # may be stored in UTC. Use a half-open UTC interval for the day.
+        local_start = datetime.combine(
+            generation_date, datetime_time.min, tzinfo=NIGERIA_TIMEZONE
+        )
+        local_end = local_start + timedelta(days=1)
+        utc_start = local_start.astimezone(timezone.utc).replace(tzinfo=None)
+        utc_end = local_end.astimezone(timezone.utc).replace(tzinfo=None)
+        query = query.filter(
+            BulkGenerationJob.created_at >= utc_start,
+            BulkGenerationJob.created_at < utc_end,
+        )
+
+    total = query.count()
+    rows = query.order_by(BulkGenerationJob.created_at.desc()).offset(offset).limit(limit).all()
+    return {
+        "total_batches": total,
+        "limit": limit,
+        "offset": offset,
+        "batches": [
+            {
+                "job_id": item.id,
+                "batch_name": getattr(item, "batch_name", None),
+                "generation_date": item.created_at.isoformat() if getattr(item, "created_at", None) else None,
+                "status": item.status,
+                "total_bills": int(item.total or 0),
+                "successful_bills": int(item.successful or 0),
+                "failed_bills": int(item.failed or 0),
+                "zip_ready": bool(getattr(item, "zip_file_id", None)) or bool(item.zip_path and Path(item.zip_path).is_file()),
+                "original_excel_ready": bool(getattr(item, "original_excel_file_id", None)),
+                "updated_excel_ready": bool(getattr(item, "updated_excel_file_id", None)),
+                "drive_folder_ready": bool(getattr(item, "drive_folder_id", None)),
+            }
+            for item in rows
+        ],
+    }
+
+
+@router.get("/batches/{job_id}/download/original-excel")
+def download_batch_original_excel(job_id: str, db: Session = Depends(get_db)):
+    job = db.query(BulkGenerationJob).filter(BulkGenerationJob.id == job_id).first()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Bulk batch not found.")
+    return _download_batch_drive_asset(
+        job, "original_excel_file_id", "original_excel_filename", "original_workbook.xlsx"
+    )
+
+
+@router.get("/batches/{job_id}/download/updated-excel")
+def download_batch_updated_excel(job_id: str, db: Session = Depends(get_db)):
+    job = db.query(BulkGenerationJob).filter(BulkGenerationJob.id == job_id).first()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Bulk batch not found.")
+    return _download_batch_drive_asset(
+        job, "updated_excel_file_id", "updated_excel_filename", "bulk_generation_with_lg_codes.xlsx"
+    )
+
+
+@router.get("/batches/{job_id}/download/zip")
+def download_batch_zip(job_id: str, db: Session = Depends(get_db)):
+    return download_bulk_generation(job_id=job_id, db=db)
