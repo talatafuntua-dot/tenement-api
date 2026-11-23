@@ -1,4 +1,5 @@
 import os
+import re
 import secrets
 import threading
 from pathlib import Path
@@ -359,3 +360,138 @@ def archive_pdfs_to_drive(pdf_paths, context="PDF archive", category=None):
 
     print(f"[Google Drive] {context}: uploaded={uploaded}, failed={failed}.")
     return {"uploaded": uploaded, "failed": failed, "skipped": False}
+
+# =====================================================
+# NAMED BULK BATCH STORAGE
+# These helpers are separate from the existing PDF archive
+# so the current individual/scanned-PDF filing remains intact.
+# =====================================================
+
+def _drive_client_for_storage(context="Google Drive storage"):
+    refresh_token = os.getenv("GOOGLE_REFRESH_TOKEN")
+    client_id = os.getenv("GOOGLE_CLIENT_ID")
+    client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+    root_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+
+    if not all([refresh_token, client_id, client_secret, root_folder_id]):
+        print(f"[Google Drive] Skipped {context}: required environment variables are missing.")
+        return None, root_folder_id
+
+    credentials = Credentials(
+        token=None,
+        refresh_token=refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=client_id,
+        client_secret=client_secret,
+        scopes=SCOPES,
+    )
+    credentials.refresh(GoogleAuthRequest())
+    drive = build("drive", "v3", credentials=credentials, cache_discovery=False)
+    return drive, root_folder_id
+
+
+def create_named_bulk_batch_folder(batch_name, job_id, now=None, drive=None):
+    """Create/find the dated Drive location and a unique named batch folder."""
+    if drive is None:
+        drive, root_folder_id = _drive_client_for_storage("named bulk batch folder")
+    else:
+        root_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+    if drive is None or not root_folder_id:
+        return None
+
+    now = now or datetime.now(NIGERIA_TIMEZONE)
+    year_name = now.strftime("%Y")
+    month_name = now.strftime("%B")
+    day_name = now.strftime("%d %B %Y")
+    safe_batch_name = re.sub(r"[^A-Za-z0-9_. -]+", "_", str(batch_name)).strip()[:90]
+    folder_name = f"{safe_batch_name} - {job_id[:8]}"
+
+    with _folder_creation_lock:
+        year_id = _get_or_create_folder(drive, year_name, root_folder_id)
+        month_id = _get_or_create_folder(drive, month_name, year_id)
+        day_id = _get_or_create_folder(drive, day_name, month_id)
+        bulk_id = _get_or_create_folder(drive, "Bulk Bills", day_id)
+        batch_id = _get_or_create_folder(drive, folder_name, bulk_id)
+
+    return batch_id
+
+
+def archive_bulk_batch_to_drive(batch_name, job_id, files):
+    """Upload named batch files into one dedicated Drive folder.
+
+    `files` is a mapping of stable keys to local file paths. Returns the folder
+    ID and per-key Drive file IDs. Upload failures never fail bill generation.
+    """
+    result = {"folder_id": None, "files": {}, "uploaded": 0, "failed": 0, "skipped": False}
+    paths = {key: Path(value) for key, value in (files or {}).items() if value}
+    paths = {key: value for key, value in paths.items() if value.is_file()}
+    if not paths:
+        return result
+
+    try:
+        drive, _ = _drive_client_for_storage(f"bulk batch {batch_name}")
+        if drive is None:
+            result["skipped"] = True
+            return result
+        folder_id = create_named_bulk_batch_folder(batch_name, job_id, drive=drive)
+        if not folder_id:
+            result["skipped"] = True
+            return result
+        result["folder_id"] = folder_id
+
+        for key, path in paths.items():
+            try:
+                suffix = path.suffix.lower()
+                mime_type = {
+                    ".pdf": "application/pdf",
+                    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    ".zip": "application/zip",
+                }.get(suffix, "application/octet-stream")
+                media = MediaFileUpload(str(path), mimetype=mime_type, resumable=True)
+                uploaded = drive.files().create(
+                    body={"name": path.name, "parents": [folder_id]},
+                    media_body=media,
+                    fields="id,name,mimeType,webViewLink",
+                ).execute()
+                result["files"][key] = {
+                    "id": uploaded.get("id"),
+                    "name": uploaded.get("name"),
+                    "mime_type": uploaded.get("mimeType"),
+                    "web_view_link": uploaded.get("webViewLink"),
+                }
+                result["uploaded"] += 1
+                print(f"[Google Drive] Bulk batch {batch_name}: uploaded {path.name}")
+            except Exception as exc:
+                result["failed"] += 1
+                print(f"[Google Drive] Bulk batch upload failed for {path.name}: {exc}")
+    except Exception as exc:
+        result["failed"] += len(paths)
+        print(f"[Google Drive] Could not archive bulk batch {batch_name}: {exc}")
+
+    print(
+        f"[Google Drive] Bulk batch {batch_name}: "
+        f"uploaded={result['uploaded']}, failed={result['failed']}"
+    )
+    return result
+
+
+def download_drive_file(file_id):
+    """Return (bytes, filename, mime_type) for a file stored in Drive."""
+    from io import BytesIO
+    from googleapiclient.http import MediaIoBaseDownload
+
+    drive, _ = _drive_client_for_storage("bulk batch download")
+    if drive is None:
+        raise RuntimeError("Google Drive is not configured.")
+
+    metadata = drive.files().get(
+        fileId=file_id,
+        fields="id,name,mimeType",
+    ).execute()
+    request = drive.files().get_media(fileId=file_id)
+    buffer = BytesIO()
+    downloader = MediaIoBaseDownload(buffer, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    return buffer.getvalue(), metadata.get("name", "download"), metadata.get("mimeType", "application/octet-stream")
