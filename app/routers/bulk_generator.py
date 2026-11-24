@@ -976,36 +976,77 @@ def search_bulk_batches(
     generation_date: date | None = None,
     limit: int = 100,
     offset: int = 0,
+    x_bulk_admin_key: str | None = Header(
+        default=None,
+        alias="X-Bulk-Admin-Key",
+    ),
     db: Session = Depends(get_db),
 ):
-    """Search completed/queued batches by name and/or creation date."""
-    if not batch_name and not generation_date:
+    """Public batch-name search; administrator-only generation-date search."""
+
+    # A generation-date search requires the administrator key.
+    if generation_date is not None:
+        expected_key = os.getenv("TENEMENT_BULK_ADMIN_API_KEY")
+
+        if not expected_key:
+            raise HTTPException(
+                status_code=503,
+                detail="Administrator search security is not configured.",
+            )
+
+        if not x_bulk_admin_key or not secrets.compare_digest(
+            x_bulk_admin_key,
+            expected_key,
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Administrator permission is required for generation-date searches.",
+            )
+
+    if not batch_name and generation_date is None:
         raise HTTPException(
             status_code=400,
             detail="Enter a batch name or choose a generation date to search.",
         )
+
     limit = max(1, min(int(limit), 200))
     offset = max(0, int(offset))
 
     query = db.query(BulkGenerationJob)
+
     if batch_name:
-        query = query.filter(BulkGenerationJob.batch_name.ilike(f"%{batch_name.strip()}%"))
-    if generation_date:
-        # Search by Nigeria's calendar day even though Render/DB timestamps
-        # may be stored in UTC. Use a half-open UTC interval for the day.
+        query = query.filter(
+            BulkGenerationJob.batch_name.ilike(
+                f"%{batch_name.strip()}%"
+            )
+        )
+
+    if generation_date is not None:
         local_start = datetime.combine(
-            generation_date, datetime_time.min, tzinfo=NIGERIA_TIMEZONE
+            generation_date,
+            datetime_time.min,
+            tzinfo=NIGERIA_TIMEZONE,
         )
         local_end = local_start + timedelta(days=1)
+
         utc_start = local_start.astimezone(timezone.utc).replace(tzinfo=None)
         utc_end = local_end.astimezone(timezone.utc).replace(tzinfo=None)
+
         query = query.filter(
             BulkGenerationJob.created_at >= utc_start,
             BulkGenerationJob.created_at < utc_end,
         )
 
     total = query.count()
-    rows = query.order_by(BulkGenerationJob.created_at.desc()).offset(offset).limit(limit).all()
+
+    rows = (
+        query
+        .order_by(BulkGenerationJob.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
     return {
         "total_batches": total,
         "limit": limit,
@@ -1014,20 +1055,35 @@ def search_bulk_batches(
             {
                 "job_id": item.id,
                 "batch_name": getattr(item, "batch_name", None),
-                "generation_date": item.created_at.isoformat() if getattr(item, "created_at", None) else None,
+                "generation_date": (
+                    item.created_at.isoformat()
+                    if getattr(item, "created_at", None)
+                    else None
+                ),
                 "status": item.status,
                 "total_bills": int(item.total or 0),
                 "successful_bills": int(item.successful or 0),
                 "failed_bills": int(item.failed or 0),
-                "zip_ready": bool(getattr(item, "zip_file_id", None)) or bool(item.zip_path and Path(item.zip_path).is_file()),
-                "original_excel_ready": bool(getattr(item, "original_excel_file_id", None)),
-                "updated_excel_ready": bool(getattr(item, "updated_excel_file_id", None)),
-                "drive_folder_ready": bool(getattr(item, "drive_folder_id", None)),
+                "zip_ready": (
+                    bool(getattr(item, "zip_file_id", None))
+                    or bool(
+                        item.zip_path
+                        and Path(item.zip_path).is_file()
+                    )
+                ),
+                "original_excel_ready": bool(
+                    getattr(item, "original_excel_file_id", None)
+                ),
+                "updated_excel_ready": bool(
+                    getattr(item, "updated_excel_file_id", None)
+                ),
+                "drive_folder_ready": bool(
+                    getattr(item, "drive_folder_id", None)
+                ),
             }
             for item in rows
         ],
     }
-
 
 # =====================================================
 # ADMIN-ONLY EXCEL DOWNLOAD ENDPOINTS
