@@ -1,9 +1,12 @@
+import os
 import re
+import secrets
 import shutil
 import tempfile
 import time
 import uuid
 import zipfile
+
 from io import BytesIO
 from pathlib import Path
 from datetime import datetime, date, time as datetime_time, timedelta, timezone
@@ -11,7 +14,18 @@ from zoneinfo import ZoneInfo
 from typing import Literal
 
 import pandas as pd
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    UploadFile,
+)
+
 from fastapi.responses import FileResponse, Response
 from openpyxl import load_workbook
 from pypdf import PdfWriter
@@ -25,6 +39,7 @@ from app.models import NoticeTemplate, BulkGenerationJob
 from app.lg_code_allocator import allocate_bulk_lg_code
 from app.routers.google_drive import archive_bulk_batch_to_drive, download_drive_file
 
+CONVERSION_BATCH_SIZE = 25
 
 router = APIRouter(prefix="/bulk-bills", tags=["Bulk Bill Generation"])
 
