@@ -39,7 +39,6 @@ from app.models import NoticeTemplate, BulkGenerationJob
 from app.lg_code_allocator import allocate_bulk_lg_code
 from app.routers.google_drive import archive_bulk_batch_to_drive, download_drive_file
 
-CONVERSION_BATCH_SIZE = 25
 
 router = APIRouter(prefix="/bulk-bills", tags=["Bulk Bill Generation"])
 
@@ -47,6 +46,35 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = BASE_DIR / "output_pdfs"
 BATCH_DIR = OUTPUT_DIR / "bulk_batches"
 CONVERSION_BATCH_SIZE = 25
+
+# =====================================================
+# ADMIN-ONLY EXCEL DOWNLOAD SECURITY
+# =====================================================
+
+def require_bulk_admin_key(
+    x_bulk_admin_key: str | None = Header(
+        default=None,
+        alias="X-Bulk-Admin-Key",
+    ),
+):
+    expected_key = os.getenv("TENEMENT_BULK_ADMIN_API_KEY")
+
+    if not expected_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Administrator download security is not configured.",
+        )
+
+    if not x_bulk_admin_key or not secrets.compare_digest(
+        x_bulk_admin_key,
+        expected_key,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Administrator permission is required to download Excel files.",
+        )
+
+    return True
 
 
 def log_bulk_performance(metrics):
@@ -327,18 +355,7 @@ async def generate_bulk_bills(
                 if output_format in ("merged", "both") and merged_path.is_file():
                     archive.write(merged_path, arcname="merged_bills.pdf")
 
-                archive.write(
-                    updated_workbook_path,
-                    arcname="bulk_generation_with_lg_codes.xlsx",
-                )
-
-                if errors:
-                    error_text = "\n".join(
-                        f"Excel row {item['row']} ({item['property']}): {item['error']}"
-                        for item in errors
-                    )
-                    archive.writestr("generation_errors.txt", error_text)
-
+               
             performance["zip_seconds"] += time.perf_counter() - zip_started
             return FileResponse(
                 path=str(archive_path),
@@ -699,18 +716,6 @@ def run_bulk_generation_job(job_id, source_path, original_filename, template_id,
             if output_format in ("merged", "both") and merged_path.is_file():
                 archive.write(merged_path, arcname="merged_bills.pdf")
 
-            archive.write(
-                updated_workbook_path,
-                arcname="bulk_generation_with_lg_codes.xlsx",
-            )
-
-            if errors:
-                error_text = "\n".join(
-                    f"Excel row {item['row']} ({item['property']}): {item['error']}"
-                    for item in errors
-                )
-                archive.writestr("generation_errors.txt", error_text)
-
         performance["zip_seconds"] += time.perf_counter() - zip_started
 
         _save_job(
@@ -1024,25 +1029,55 @@ def search_bulk_batches(
     }
 
 
+# =====================================================
+# ADMIN-ONLY EXCEL DOWNLOAD ENDPOINTS
+# =====================================================
+
 @router.get("/batches/{job_id}/download/original-excel")
-def download_batch_original_excel(job_id: str, db: Session = Depends(get_db)):
-    job = db.query(BulkGenerationJob).filter(BulkGenerationJob.id == job_id).first()
+def download_batch_original_excel(
+    job_id: str,
+    db: Session = Depends(get_db),
+    _: bool = Depends(require_bulk_admin_key),
+):
+    job = db.query(BulkGenerationJob).filter(
+        BulkGenerationJob.id == job_id
+    ).first()
+
     if job is None:
         raise HTTPException(status_code=404, detail="Bulk batch not found.")
+
     return _download_batch_drive_asset(
-        job, "original_excel_file_id", "original_excel_filename", "original_workbook.xlsx"
+        job,
+        "original_excel_file_id",
+        "original_excel_filename",
+        "original_workbook.xlsx",
     )
 
 
 @router.get("/batches/{job_id}/download/updated-excel")
-def download_batch_updated_excel(job_id: str, db: Session = Depends(get_db)):
-    job = db.query(BulkGenerationJob).filter(BulkGenerationJob.id == job_id).first()
+def download_batch_updated_excel(
+    job_id: str,
+    db: Session = Depends(get_db),
+    _: bool = Depends(require_bulk_admin_key),
+):
+    job = db.query(BulkGenerationJob).filter(
+        BulkGenerationJob.id == job_id
+    ).first()
+
     if job is None:
         raise HTTPException(status_code=404, detail="Bulk batch not found.")
+
     return _download_batch_drive_asset(
-        job, "updated_excel_file_id", "updated_excel_filename", "bulk_generation_with_lg_codes.xlsx"
+        job,
+        "updated_excel_file_id",
+        "updated_excel_filename",
+        "bulk_generation_with_lg_codes.xlsx",
     )
 
+
+# =====================================================
+# PUBLIC PDF-ONLY ZIP DOWNLOAD
+# =====================================================
 
 @router.get("/batches/{job_id}/download/zip")
 def download_batch_zip(job_id: str, db: Session = Depends(get_db)):
