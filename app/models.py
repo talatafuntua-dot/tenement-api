@@ -7,7 +7,8 @@ from sqlalchemy import (
     Numeric,
     DateTime,
     ForeignKey,
-    UniqueConstraint
+    UniqueConstraint,
+    Boolean
 )
 from sqlalchemy.sql import func
 
