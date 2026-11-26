@@ -1,4 +1,3 @@
-
 import secrets
 import string
 from pathlib import Path
@@ -28,15 +27,18 @@ TEMPLATES_FOLDER = BASE_DIR / "templates"
 
 
 # =========================================================
-# AUTOMATIC TEMPLATE DISCOVERY
+# AUTOMATIC TEMPLATE DISCOVERY AND SYNCHRONISATION
 # =========================================================
 
 def discover_and_register_templates(db: Session):
     """
-    Automatically discover DOCX templates and register
-    previously unseen files in the database.
+    Synchronise the Neon template registry with the DOCX files
+    currently present in the templates directory.
 
-    Existing template IDs and descriptions are preserved.
+    - New files are registered.
+    - Deleted files are deactivated.
+    - Restored files are reactivated using their existing IDs.
+    - Existing names and descriptions are preserved.
     """
 
     if not TEMPLATES_FOLDER.is_dir():
@@ -45,87 +47,91 @@ def discover_and_register_templates(db: Session):
             detail=f"Templates directory not found: {TEMPLATES_FOLDER}"
         )
 
-    discovered_files = sorted(
-        [
-            path for path in TEMPLATES_FOLDER.iterdir()
-            if (
-                path.is_file()
-                and path.suffix.lower() == ".docx"
-                and not path.name.startswith("~$")
+    # Discover the current DOCX files. Ignore Word temporary files.
+    discovered_files = {
+        path.name: path
+        for path in sorted(
+            TEMPLATES_FOLDER.iterdir(),
+            key=lambda item: item.name.casefold()
+        )
+        if (
+            path.is_file()
+            and path.suffix.lower() == ".docx"
+            and not path.name.startswith("~$")
+        )
+    }
+
+    try:
+        # Load the existing registry once.
+        existing_templates = db.query(NoticeTemplate).all()
+
+        existing_by_filename = {
+            template.filename: template
+            for template in existing_templates
+        }
+
+        existing_names = {
+            template.name
+            for template in existing_templates
+        }
+
+        registered = 0
+
+        # Register new files and reactivate files that have returned.
+        for filename, template_path in discovered_files.items():
+
+            existing = existing_by_filename.get(filename)
+
+            if existing is not None:
+                existing.is_active = True
+                existing.file_path = str(template_path.resolve())
+                continue
+
+            # Choose a unique display name without changing existing names.
+            base_name = template_path.stem
+            template_name = base_name
+            counter = 2
+
+            while template_name in existing_names:
+                template_name = f"{base_name} ({counter})"
+                counter += 1
+
+            new_template = NoticeTemplate(
+                name=template_name,
+                filename=filename,
+                file_path=str(template_path.resolve()),
+                description="",
+                is_active=True
             )
-        ],
-        key=lambda path: path.name.casefold()
-    )
 
-    registered = 0
-
-    for template_path in discovered_files:
-
-        filename = template_path.name
-
-        # -------------------------------------------------
-        # Check whether this filename is already registered
-        # -------------------------------------------------
-
-        existing = (
-            db.query(NoticeTemplate)
-            .filter(NoticeTemplate.filename == filename)
-            .first()
-        )
-
-        if existing:
-            continue
-
-        # -------------------------------------------------
-        # Generate a unique template name
-        # -------------------------------------------------
-
-        base_name = template_path.stem
-        template_name = base_name
-        counter = 2
-
-        while (
-            db.query(NoticeTemplate)
-            .filter(NoticeTemplate.name == template_name)
-            .first()
-        ):
-            template_name = f"{base_name} ({counter})"
-            counter += 1
-
-        # -------------------------------------------------
-        # Register the new template
-        # -------------------------------------------------
-
-        new_template = NoticeTemplate(
-            name=template_name,
-            filename=filename,
-            file_path=str(template_path.resolve()),
-            description=""
-        )
-
-        db.add(new_template)
-
-        try:
-            db.commit()
+            db.add(new_template)
+            existing_names.add(template_name)
             registered += 1
 
-        except IntegrityError:
+        # Deactivate records whose files are no longer in the directory.
+        for template in existing_templates:
+            if template.filename not in discovered_files:
+                template.is_active = False
 
-            db.rollback()
+        # Flush checks database constraints before committing the changes.
+        db.flush()
+        db.commit()
 
-            # Another request may have registered it
-            # while this request was running.
+        return registered
 
-            existing = (
-                db.query(NoticeTemplate)
-                .filter(NoticeTemplate.filename == filename)
-                .first()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Template synchronisation encountered a database conflict. "
+                "Please retry the template list request."
             )
+        )
 
-            if not existing:
-                raise
-
-    return registered
+    except Exception:
+        db.rollback()
+        raise
 
 
 # =========================================================
@@ -167,18 +173,18 @@ def search_by_owner(
 
 # =========================================================
 # AVAILABLE TEMPLATES
-# AUTOMATICALLY DISCOVER AND REGISTER NEW FILES
+# AUTOMATICALLY DISCOVER AND SYNCHRONISE FILES
 # =========================================================
 
 @router.get("/templates")
 def get_templates(
     db: Session = Depends(get_db)
 ):
-
     discover_and_register_templates(db)
 
     templates = (
         db.query(NoticeTemplate)
+        .filter(NoticeTemplate.is_active == True)
         .order_by(NoticeTemplate.id.asc())
         .all()
     )
